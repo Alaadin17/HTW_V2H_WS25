@@ -7,11 +7,15 @@ PV--------->|                            |
             |----------Wallbox---------->|
 Grid------->|                            |
             |<---------Wallbox-----------|
-excess_bel<-|
-            |
-demand<-----|
+excess_bel<-|                            |-----> BEV_drive (driving demand)
+            |                            |
+demand<-----|                            |
 
-
+- Bus_ele:     Household electricity bus (PV, grid, house demand, V2H)
+- Bus_BEV:     Mobility / BEV bus (battery and driving demand)
+- BEV_Storage: Battery storage of the BEV
+- Wallbox:     Bidirectional charger connecting Bus_ele and Bus_BEV
+- BEV_drive:   Energy demand for driving (traction), modelled as a sink on Bus_BEV
 """
 
 ###########################################################################
@@ -65,12 +69,34 @@ def get_file_path():
 
 
 def get_timeseries():
-    timeseries_path = r"C:\git\github\V2G_HTW_SS25\input_timeseries\input_timeseries_with_BEV_and_dayaheadprice.csv"
+    """
+    Load the main time series (PV, household load, BEV state, prices, etc.)
+    using a path that is relative to the project root.
+    """
+    # Ordner dieser Datei: .../HTW_V2H_WS2526/models/oemof
+    script_dir = Path(__file__).resolve().parent
+
+    # Projekt-Root: zwei Ebenen höher → .../HTW_V2H_WS2526
+    project_root = script_dir.parents[1]
+
+    # Pfad zur CSV relativ zum Projekt-Root
+    timeseries_path = (
+        project_root
+        / "input_timeseries"
+        / "input_timeseries_with_BEV_and_dayaheadprice.csv"
+    )
+
+    print("📂 Lade Timeseries aus:", timeseries_path)
+
     df_timeseries = pd.read_csv(timeseries_path, delimiter=",")
     return df_timeseries
 
 
 def get_BEV_timeserie():
+    """
+    Load a separate BEV time series file selected via file dialog.
+    (Currently not used; BEV data is taken from the main timeseries.)
+    """
     timeseries_path = get_file_path()
     BEV_timeseries = pd.read_csv(timeseries_path)
     return BEV_timeseries
@@ -143,7 +169,10 @@ class EnergySystemModel:
         logging.info("energy system has been dumped.")
 
     def define_time_index(self):
-        # ****** Defining Time index ******
+        """
+        Define the time index of the model (start date, number of periods, frequency)
+        and initialise the EnergySystem object.
+        """
         self.start_date = "2022-01-01"
         self.periods = self.simulation_time
         self.freq = str(self.time_step)
@@ -153,6 +182,9 @@ class EnergySystemModel:
         self.es = EnergySystem(timeindex=self.time_index, infer_last_interval=True)
 
     def define_timeseries(self):
+        """
+        Import all required time series for the model (PV, demand, BEV, prices).
+        """
         logging.info("Import general timeseries")
         self.df_timeseries = get_timeseries()
         logging.info("Import BEV-timeseries")
@@ -168,7 +200,13 @@ class EnergySystemModel:
         )
 
     def create_oemof_objects(self):
-
+        """
+        Create all oemof.solph components:
+        - Buses (electricity and mobility)
+        - PV source, grid source, excess and demand sinks
+        - Wallbox (bidirectional converter)
+        - BEV storage and BEV driving sink
+        """
         ## variable_costs
         PV_variable_costs = 0
         Grid_variable_costs = 30
@@ -249,24 +287,46 @@ class EnergySystemModel:
             )
         )
 
-        # add BEV storage
+        # --- BEV STORAGE AND DRIVING ---
+
+        # add BEV storage (battery only, no driving losses included)
         BEV = cmp.GenericStorage(
             label="BEV_Storage",
-            inputs={b_bev: flows.Flow()},
-            outputs={b_bev: flows.Flow()},
-            nominal_storage_capacity=45,
-            min_storage_level=0.2,
-            max_storage_level=0.95,
-            initial_storage_level=0.95,
-            fixed_losses_absolute=self.BEV_consumption * 4,
+            inputs={b_bev: flows.Flow()},       # charging from the mobility bus
+            outputs={b_bev: flows.Flow()},      # discharging to the mobility bus
+            nominal_storage_capacity=45,        # kWh battery capacity
+            min_storage_level=0.2,              # minimum SOC (20 %)
+            max_storage_level=0.95,             # maximum SOC (95 %)
+            initial_storage_level=0.95,         # initial SOC (95 %)
+            # Optional: real standby losses could be added here, e.g.:
+            # fixed_losses_relative=0.0005,     # ~0.05 % per time step
         )
         self.es.add(BEV)
 
-    def optimise_energysystem(self):
+        # Driving: model energy consumption as a separate demand on the mobility bus
+        # This represents traction energy needed during driving periods.
+        # Whenever BEV_consumption > 0, the storage must discharge to satisfy this sink.
+        self.es.add(
+            cmp.Sink(
+                label="BEV_drive",
+                inputs={
+                    b_bev: flows.Flow(
+                        fix=self.BEV_consumption * 4,  # time series of driving consumption (kW)
+                        nominal_value=1,  # scaling factor (1 keeps units consistent)
+                    )
+                },
+            )
+        )
+
         ##########################################################################
         # Optimise the energy system and plot the results
         ##########################################################################
 
+    def optimise_energysystem(self):
+        """
+        Create the oemof.solph operational model from the defined EnergySystem.
+        Optionally write an LP file if debug mode is enabled.
+        """
         # initialise the operational model
         self.model = Model(self.es)
 
