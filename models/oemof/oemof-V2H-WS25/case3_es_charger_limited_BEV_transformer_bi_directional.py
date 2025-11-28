@@ -65,15 +65,9 @@ def get_file_path():
 
 
 def get_timeseries():
-    timeseries_path = r"C:\git\github\V2G_HTW_SS25\input_timeseries\input_timeseries_with_BEV_and_dayaheadprice.csv"
+    timeseries_path = get_file_path()
     df_timeseries = pd.read_csv(timeseries_path, delimiter=",")
     return df_timeseries
-
-
-def get_BEV_timeserie():
-    timeseries_path = get_file_path()
-    BEV_timeseries = pd.read_csv(timeseries_path)
-    return BEV_timeseries
 
 
 class EnergySystemModel:
