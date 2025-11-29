@@ -30,6 +30,7 @@ from oemof.solph import EnergySystem
 from oemof.solph import Model
 from oemof.solph import buses
 from oemof.solph import components as cmp
+from pathlib import Path
 
 from oemof.solph import flows
 from oemof.solph import helpers
@@ -73,17 +74,15 @@ def get_timeseries():
     Load the main time series (PV, household load, BEV state, prices, etc.)
     using a path that is relative to the project root.
     """
-    # Ordner dieser Datei: .../HTW_V2H_WS2526/models/oemof
+    # Ordner dieser Datei: .../HTW_V2H_WS2526/models/oemof/oemof-V2H-WS25
     script_dir = Path(__file__).resolve().parent
+    print(script_dir)
 
-    # Projekt-Root: zwei Ebenen höher → .../HTW_V2H_WS2526
-    project_root = script_dir.parents[1]
-
-    # Pfad zur CSV relativ zum Projekt-Root
+    # Pfad zur CSV-Datei relativ zum Skriptordner
     timeseries_path = (
-        project_root
-        / "input_timeseries"
-        / "input_timeseries_with_BEV_and_dayaheadprice.csv"
+        script_dir
+        / "Input_timeseries"
+        / "input_timeseries.csv"
     )
 
     print("📂 Lade Timeseries aus:", timeseries_path)
