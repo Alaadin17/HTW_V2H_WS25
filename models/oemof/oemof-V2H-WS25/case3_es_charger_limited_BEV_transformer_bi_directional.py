@@ -90,10 +90,6 @@ def get_timeseries():
     df_timeseries = pd.read_csv(timeseries_path, delimiter=",")
     return df_timeseries
 
-
-
-
-
 class EnergySystemModel:
     # *************************************************************************
     # ********** PART 1 - Define and optimise the energy system ***************
@@ -375,27 +371,43 @@ class EnergySystemModel:
         self.es.results["meta"] = processing.meta_results(self.model)
 
     def dump_results(self):
-        # The default path is the '.oemof' folder in your $HOME directory.
-        # The default filename is 'es_dump.oemof'.
-        # You can omit the attributes (as None is the default value) for testing
-        # cases. You should use unique names/folders for valuable results to avoid
-        # overwriting.
+        """Speichere das erzeugte EnergySystem und die Ergebnisse als Dump.
 
-        file_path = os.getcwd()
-        base_path = os.path.abspath(
-            os.path.join(file_path, "..", "..")
-        )  # main directory of the repo
-        # 🔗 Combine to go to timeseries.csv
-        dump_path = os.path.join(base_path, "dumps")
+        Ziel:
+            - Strukturierte Ablage der Ergebnisse innerhalb des Repositorys
+              unter `results/oemof-V2H-WS25/dumps/`.
 
-        if not os.path.exists(dump_path):
-            os.makedirs(dump_path)
-            print(f"📁 Folder created: {dump_path}")
-        else:
-            print(f"✅ Folder already exists: {dump_path}")
+        Wichtige Hinweise:
+            - Umschalten über `self.should_dump_results` (False = kein Speichern).
+            - Der Pfad wird mit `pathlib` plattformunabhängig aufgebaut.
+            - Falls sich die Projektstruktur ändert, kann `project_root` leicht
+              angepasst werden (Eltern-Ebene des Skriptordners).
+            - Bei Fehlern wird eine verständliche Meldung ausgegeben, statt still
+              zu scheitern.
+        """
+        # Skriptordner: .../HTW_V2H_WS25/models/oemof/oemof-V2H-WS25
+        script_dir = Path(__file__).resolve().parent
+        # Projektwurzel (2 Ebenen hoch: oemof-V2H-WS25 -> oemof -> models -> Root)
+        project_root = script_dir.parents[2]
 
-        if self.should_dump_results:
+        # Zielpfad für Dumps (innerhalb des Repos, versionierbar wenn gewünscht)
+        dump_path = project_root / "results" / "oemof-V2H-WS25" / "dumps"
+
+        # Ordner (rekursiv) anlegen, falls nicht vorhanden
+        dump_path.mkdir(parents=True, exist_ok=True)
+        print(f"💾 Dump-Ziel: {dump_path}")
+
+        # Früh beenden, falls Speichern deaktiviert wurde
+        if not self.should_dump_results:
+            print("ℹ️ Dump deaktiviert (self.should_dump_results = False).")
+            return
+
+        # Schreibversuch mit Fehlerbehandlung
+        try:
             self.es.dump(dpath=dump_path, filename=self.dump_filename)
+            print("✅ Dump erfolgreich geschrieben.")
+        except Exception as e:
+            print(f"❌ Fehler beim Schreiben des Dumps: {e}")
 
 
 if __name__ == "__main__":
