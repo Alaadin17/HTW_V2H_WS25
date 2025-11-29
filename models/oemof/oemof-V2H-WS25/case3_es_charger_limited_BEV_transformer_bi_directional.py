@@ -91,14 +91,7 @@ def get_timeseries():
     return df_timeseries
 
 
-def get_BEV_timeserie():
-    """
-    Load a separate BEV time series file selected via file dialog.
-    (Currently not used; BEV data is taken from the main timeseries.)
-    """
-    timeseries_path = get_file_path()
-    BEV_timeseries = pd.read_csv(timeseries_path)
-    return BEV_timeseries
+
 
 
 class EnergySystemModel:
