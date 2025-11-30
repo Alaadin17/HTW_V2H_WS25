@@ -4,17 +4,17 @@
             |                            |
             |                            |<---->BEV-Storage
 PV--------->|                            |
-            |----------Wallbox---------->|
-Grid------->|                            |
-            |<---------Wallbox-----------|
-excess_bel<-|                            |-----> BEV_drive (driving demand)
+            |                            |
+Grid------->|                            |<---->Wallbox
+            |                            |
+excess_bel<-|                            |----->BEV_drive (driving demand)
             |                            |
 demand<-----|                            |
 
 - Bus_ele:     Household electricity bus (PV, grid, house demand, V2H)
 - Bus_BEV:     Mobility / BEV bus (battery and driving demand)
 - BEV_Storage: Battery storage of the BEV
-- Wallbox:     Bidirectional charger connecting Bus_ele and Bus_BEV
+- Wallbox:     separate unidirectional converters for charging the EV (not connected with the House-grid for comparing purposes)
 - BEV_drive:   Energy demand for driving (traction), modelled as a sink on Bus_BEV
 """
 
