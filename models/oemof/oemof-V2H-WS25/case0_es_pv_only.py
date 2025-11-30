@@ -222,25 +222,13 @@ class EnergySystemModel:
         # Wallbox as Transformer
         wallbox_to_BEV = cmp.Converter(
             label="wallbox_to_BEV",
-            inputs={self.b_el: flows.Flow()},
+            inputs={},
             outputs={
                 b_bev: flows.Flow(max=self.BEV_state, nominal_value=self.wallbox_power)
             },
             conversion_factors={b_bev: 1.0},
         )
         self.es.add(wallbox_to_BEV)
-
-        wallbox_from_BEV = cmp.Converter(
-            label="wallbox_from_BEV",
-            inputs={b_bev: flows.Flow()},
-            outputs={
-                self.b_el: flows.Flow(
-                    max=self.BEV_state, nominal_value=self.wallbox_power
-                )
-            },
-            conversion_factors={b_bev: 1.0},
-        )
-        self.es.add(wallbox_from_BEV)
 
         # create fixed source object representing pv power plants
         self.es.add(
