@@ -175,17 +175,23 @@ class EnergySystemModel:
         """
         logging.info("Import general timeseries")
         self.df_timeseries = get_timeseries()
-        logging.info("Import BEV-timeseries")
+
+        # logging.info("Import BEV-timeseries")
         # self.BEV_timeseries = get_BEV_timeserie()
-        # Zeitreihen
-        self.BEV_state = self.df_timeseries["BEV_at_home"]
-        self.PV_load = self.df_timeseries["PV_kW"]
-        self.demand = self.df_timeseries["Load_kW"]
-        self.BEV_consumption = self.df_timeseries["consumption"]
-        self.BEV_charging = self.df_timeseries["charging_power_kW"]
-        self.electricity_price = self.df_timeseries["day_ahead_price[€/MWh]"] * (
-            100 / 1000
-        )
+
+        # Assign time series to variables
+        try:
+            self.BEV_state = self.df_timeseries["BEV_at_home"]
+            self.PV_load = self.df_timeseries["PV_kW"]
+            self.demand = self.df_timeseries["Load_kW"]
+            self.BEV_consumption = self.df_timeseries["consumption"]
+            self.BEV_charging = self.df_timeseries["charging_power_kW"]
+            self.electricity_price = self.df_timeseries["day_ahead_price[€/MWh]"] * (100 / 1000)
+        except Exception as e:
+            logging.error(
+                "Error assigning time series data. Please check the input data format and column names."
+            )
+            raise e
 
     def create_oemof_objects(self):
         """
