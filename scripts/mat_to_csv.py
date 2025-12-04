@@ -1,4 +1,5 @@
 """
+Braucht scipy.io zum lesen der .mat Datei
 Skript liest die .mat  Datei und erstellt aus den inhalten  jeweils eine  .csv datei
 für:
 P_da= elektrische Dauerlast/ Haushaltsprofil
