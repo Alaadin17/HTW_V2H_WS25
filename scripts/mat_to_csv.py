@@ -1,5 +1,14 @@
 """
-Skript liest die .mat  Datei und erstellt aus den inhalten eine  .csv datei
+Skript liest die .mat  Datei und erstellt aus den inhalten  jeweils eine  .csv datei
+für:
+P_da= elektrische Dauerlast/ Haushaltsprofil
+P_PVS=PV-Systemleistung
+
+Umwandlung von 1 Minute Zeitschritten in 15 Minute
+erzeugen von timestamp/Zeitachse
+Start: 1.1.2023 00:00
+Länge: 35 040 Zeitschritte
+
 project/
 │
 ├── data/
@@ -29,7 +38,7 @@ print(f"➜ Lade MAT-Datei: {mat_path}")
 mat = scipy.io.loadmat(mat_path, squeeze_me=True)
 
 # ----------------------------------------------------------------------
-# Hilfsfunktion: 1-min-Leistung → 15-min-Leistung (Mittelwert)
+# Hilfsfunktion: 1-min-Leistung zu 15-min-Leistung (Mittelwert)
 # ----------------------------------------------------------------------
 def to_15min_power(arr_1min: np.ndarray) -> np.ndarray:
     """
