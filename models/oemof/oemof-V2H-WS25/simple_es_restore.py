@@ -6,6 +6,7 @@ from oemof.tools import logger
 from oemof.solph import views
 import os
 import matplotlib
+from pathlib import Path
 
 matplotlib.use("TkAgg")  # sicherstellen, dass ein GUI-fähiges Backend genutzt wird
 
@@ -18,44 +19,25 @@ logger.define_logging(
 
 
 def get_dump_path():
-    file_path = os.getcwd()
-    base_path = os.path.abspath(
-        os.path.join(file_path, "..", "..")
-    )  # main directory of the repo
-    # 🔗 Combine to go to timeseries.csv
-    dump_path = os.path.join(base_path, "dumps")
-    return dump_path
+    # Skriptordner: .../HTW_V2H_WS25/models/oemof/oemof-V2H-WS25
+    script_dir = Path(__file__).resolve().parent
+    # Projektwurzel (2 Ebenen hoch: oemof-V2H-WS25 -> oemof -> models -> Root)
+    project_root = script_dir.parents[2]
+
+    # Zielpfad für Dumps (innerhalb des Repos, versionierbar wenn gewünscht)
+    dump_path = project_root / "results" / "oemof-V2H-WS25" / "dumps"
+    return str(dump_path)
 
 
 def get_save_path(subfolder="esys") -> str:
-    """
-    Returns the path where files should be saved.
-    Optionally creates and returns a subfolder inside the current working directory.
+    # Skriptordner: .../HTW_V2H_WS25/models/oemof/oemof-V2H-WS25
+    script_dir = Path(__file__).resolve().parent
+    # Projektwurzel (2 Ebenen hoch: oemof-V2H-WS25 -> oemof -> models -> Root)
+    project_root = script_dir.parents[2]
 
-    Args:
-        subfolder (str, optional): Name of the subfolder to create/use.
-
-    Returns:
-        str: Absolute path to the (sub)folder.
-    """
-    file_path = os.getcwd()
-    base_path = os.path.abspath(
-        os.path.join(file_path, "..", "..", "results")
-    )  # main directory of the repo
-    # 🔗 Combine to go to results - esys path
-
-    if subfolder:
-        save_path = os.path.join(base_path, subfolder)
-
-        if not os.path.exists(save_path):
-            os.makedirs(save_path)
-            print(f"📁 Folder created: {save_path}")
-        else:
-            print(f"✅ Folder already exists: {save_path}")
-    else:
-        pass
-
-    return save_path
+    # Zielpfad für Dumps (innerhalb des Repos, versionierbar wenn gewünscht)
+    csv_path = project_root / "results" / "oemof-V2H-WS25" / "timeseries"
+    return str(csv_path)
 
 
 def restore_results(dump_path, filename) -> tuple[any, any]:
@@ -211,10 +193,11 @@ def plot(
 
 
 if __name__ == "__main__":
+    case_0 = "case0"
     case_1 = "case2_es_charger_limited_BEV_dumb"
     case_2 = "case3_es_charger_limited_BEV_transformer_uni_directional"
     case_3 = "case4_es_charger_limited_BEV_transformer_bi_directional"
-    case_to_study = case_3
+    case_to_study = case_0
 
     ### restore and get results ####
     path = get_dump_path()
