@@ -85,10 +85,8 @@ def get_timeseries():
         / "input_timeseries.csv"
     )
 
-    print("📂 Lade Timeseries aus:", timeseries_path)
-
     df_timeseries = pd.read_csv(timeseries_path, delimiter=",")
-    return df_timeseries
+    return df_timeseries, timeseries_path
 
 class EnergySystemModel:
     # *************************************************************************
@@ -174,7 +172,9 @@ class EnergySystemModel:
         Import all required time series for the model (PV, demand, BEV, prices).
         """
         logging.info("Import general timeseries")
-        self.df_timeseries = get_timeseries()
+        self.df_timeseries, timeseries_path = get_timeseries()
+        logging.info(f"timeseries imported successfully from{timeseries_path}.")
+
 
         # logging.info("Import BEV-timeseries")
         # self.BEV_timeseries = get_BEV_timeserie()
