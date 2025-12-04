@@ -76,7 +76,6 @@ def get_timeseries():
     """
     # Ordner dieser Datei: .../HTW_V2H_WS2526/models/oemof/oemof-V2H-WS25
     script_dir = Path(__file__).resolve().parent
-    print(script_dir)
 
     # Pfad zur CSV-Datei relativ zum Skriptordner
     timeseries_path = (
@@ -118,11 +117,16 @@ class EnergySystemModel:
         )
 
         # Output Info
+        logging.info("Logger initialized")
+        # Output Info
         logging.info("Initialize the energy system")
 
         self.main()
 
     def main(self):
+        # Output Info
+        logging.info("initialize the general model settings")
+
         self.should_dump_results = True  # oder False je nach Bedarf
         self.solver = "cbc"  # 'glpk', 'gurobi',....
         self.solver_verbose = False  # show/hide solver output
@@ -134,6 +138,7 @@ class EnergySystemModel:
         self.wallbox_power = 11  # kW
         self.simulation_time = 672  # Eine Woche
         self.time_step = "15min"
+
         self.Model()
 
     def Model(self):
@@ -171,7 +176,6 @@ class EnergySystemModel:
         """
         Import all required time series for the model (PV, demand, BEV, prices).
         """
-        logging.info("Import general timeseries")
         self.df_timeseries, timeseries_path = get_timeseries()
         logging.info(f"timeseries imported successfully from{timeseries_path}.")
 
@@ -192,6 +196,9 @@ class EnergySystemModel:
                 "Error assigning time series data. Please check the input data format and column names."
             )
             raise e
+        
+        # Output Info
+        logging.info("Time series data assigned successfully to variables.")
 
     def create_oemof_objects(self):
         """
@@ -206,9 +213,6 @@ class EnergySystemModel:
         Grid_variable_costs = 30
         Grid_feed_in_costs = -7.9
         Wallbox_variable_costs = 0
-
-        # letzte Schritte
-        # output b_bev (max=self.BEV_state,nominal_value=self.wallbox_power)
 
         ### BUS
         # create the first Bus = electricity bus
@@ -405,4 +409,4 @@ class EnergySystemModel:
 
 
 if __name__ == "__main__":
-    Energysystem = EnergySystemModel("case4_es_charger_limited_BEV_transformer_bi_directional")
+    Energysystem = EnergySystemModel("case0")
