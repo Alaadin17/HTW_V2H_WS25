@@ -348,15 +348,15 @@ class EnergySystemModel:
                     termination != TerminationCondition.optimal
                 ):
                     msg = (
-                        f"\n❌ The energy system could not find a solution.\n"
+                        f"\nThe energy system could not find a solution.\n"
                         f"Solver status: {status}\n"
                         f"Termination condition: {termination}\n"
                         f"Message: {results.solver.message}\n"
-                        f"⛔ Simulation aborted.\n"
+                        f"Simulation aborted.\n"
                     )
                     raise RuntimeError(msg)
 
-                print("✅ The model was solved successfully.")
+                print("The model was solved successfully.")
 
             except RuntimeError as e:
                 # Raise the warning or stop
@@ -393,20 +393,20 @@ class EnergySystemModel:
 
         # Ordner (rekursiv) anlegen, falls nicht vorhanden
         dump_path.mkdir(parents=True, exist_ok=True)
-        print(f"💾 Dump-Ziel: {dump_path}")
+        print(f"Dump-Ziel: {dump_path}")
 
         # Früh beenden, falls Speichern deaktiviert wurde
         if not self.should_dump_results:
-            print("ℹ️ Dump deaktiviert (self.should_dump_results = False).")
+            print("ℹDump deaktiviert (self.should_dump_results = False).")
             return
 
         # Schreibversuch mit Fehlerbehandlung
         try:
             self.es.dump(dpath=dump_path, filename=self.dump_filename)
-            print("✅ Dump erfolgreich geschrieben.")
+            print("Dump erfolgreich geschrieben.")
         except Exception as e:
-            print(f"❌ Fehler beim Schreiben des Dumps: {e}")
+            print(f"Fehler beim Schreiben des Dumps: {e}")
 
 
 if __name__ == "__main__":
-    Energysystem = EnergySystemModel("case0")
+    Energysystem = EnergySystemModel("case00_es_pv_only")
