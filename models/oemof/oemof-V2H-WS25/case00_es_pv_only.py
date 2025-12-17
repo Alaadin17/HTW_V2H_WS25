@@ -69,10 +69,15 @@ def get_file_path():
     return file_path
 
 
-def get_timeseries():
+def get_timeseries(filename="input_timeseries.csv"):
     """
     Load the main time series (PV, household load, BEV state, prices, etc.)
     using a path that is relative to the project root.
+    
+    Parameters:
+    -----------
+    filename : str
+        Name of the CSV file to load (default: "input_timeseries.csv")
     """
     # Ordner dieser Datei: .../HTW_V2H_WS2526/models/oemof/oemof-V2H-WS25
     script_dir = Path(__file__).resolve().parent
@@ -81,7 +86,7 @@ def get_timeseries():
     timeseries_path = (
         script_dir
         / "Input_timeseries"
-        / "input_timeseries.csv"
+        / filename
     )
 
     df_timeseries = pd.read_csv(timeseries_path, delimiter=",")
