@@ -23,9 +23,19 @@ class TimeseriesBuilder:
         # Input: Emobpy results
         self.emobpy_dir = self.project_root / "results" / "emobpy-V2H-WS25"
         
+        # Input: PV data from pvlib results
+        self.pvlib_dir = self.project_root / "results" / "pvlib-V2H-WS25"
+        
+        # Input: Load profile data
+        self.load_profile_dir = self.project_root / "results" / "load-profile-15min"
+        
         # Output: oemof input timeseries
         self.output_dir = self.project_root / "models" / "oemof" / "oemof-V2H-WS25" / "Input_timeseries"
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Data storage variables
+        self.pv_data = None
+        self.load_data = None
     
     def read_emobpy_results(self, filename=None):
         """
@@ -143,8 +153,23 @@ class TimeseriesBuilder:
         elif 'Load_kW' in emobpy_df.columns:
             df_output['Load_kW'] = emobpy_df['Load_kW']
         else:
-            logging.warning("No Load data provided, filling with zeros")
-            df_output['Load_kW'] = 0.0
+            # Try to load Load data from load-profile-15min results
+            logging.info("Attempting to load Load data from load-profile-15min results...")
+            
+            # Determine frequency from datetime column
+            if len(df_output) > 1:
+                time_diff = pd.to_datetime(df_output['datetime'].iloc[1]) - pd.to_datetime(df_output['datetime'].iloc[0])
+                freq = '15min' if time_diff.total_seconds() <= 900 else '1H'
+            else:
+                freq = '15min'  # default
+            
+            load_data_loaded = self.load_load_profile(len(df_output), freq=freq)
+            
+            if load_data_loaded is not None:
+                df_output['Load_kW'] = load_data_loaded
+            else:
+                logging.warning("No Load data available, filling with zeros")
+                df_output['Load_kW'] = 0.0
         
         # Add BEV data from Emobpy
         # Add state column
@@ -253,12 +278,11 @@ class TimeseriesBuilder:
         """
         # Determine which file to use based on frequency
         if '15' in freq or freq == '15min' or freq == '15T':
-            pv_file = "pv_timeseries_15min_.csv"
+            pv_file = "pv_timeseries_15min.csv"
         else:
             pv_file = "pv_timeseries_hourly.csv"
         
-        pvlib_dir = self.project_root / "results" / "pvlib-V2H-WS25"
-        pv_path = pvlib_dir / pv_file
+        pv_path = self.pvlib_dir / pv_file
         
         if pv_path.exists():
             try:
@@ -295,13 +319,75 @@ class TimeseriesBuilder:
                 
                 logging.info(f"Loaded PV data from: {pv_file}")
                 logging.info(f"  PV range: {pv_data.min():.2f} - {pv_data.max():.2f} kW")
-                return pv_data.reset_index(drop=True)
+                self.pv_data = pv_data.reset_index(drop=True)
+                return self.pv_data
                 
             except Exception as e:
                 logging.warning(f"Error loading PV file {pv_file}: {e}")
                 return None
         else:
             logging.warning(f"PV file not found: {pv_path}")
+            return None
+    
+    def load_load_profile(self, num_timesteps, freq='15min'):
+        """
+        Load household load profile data from load-profile-15min results
+        
+        Parameters:
+        -----------
+        num_timesteps : int
+            Number of timesteps needed
+        freq : str
+            Time frequency ('15min' or 'H'/'1H' for hourly)
+        
+        Returns:
+        --------
+        pd.Series : Load data or None if file not found
+        """
+        # Look for load profile file
+        load_file = "load_profile_15min.csv"
+        load_path = self.load_profile_dir / load_file
+        
+        if load_path.exists():
+            try:
+                # Read the CSV file (default comma separator)
+                df_load = pd.read_csv(load_path)
+                
+                # Look for load/power column
+                load_cols = [col for col in df_load.columns if 'load' in col.lower() or 'power' in col.lower() or 'demand' in col.lower()]
+                
+                if load_cols:
+                    load_data = df_load[load_cols[0]]
+                else:
+                    # Use second column if no obvious load column found
+                    load_data = df_load.iloc[:, 1] if len(df_load.columns) > 1 else df_load.iloc[:, 0]
+                
+                # Convert to numeric in case it's strings
+                load_data = pd.to_numeric(load_data, errors='coerce').fillna(0)
+                
+                # Convert W to kW if necessary (check if values are very large)
+                if load_data.max() > 100:  # likely in Watts
+                    load_data = load_data / 1000.0
+                    logging.info("Converted Load data from W to kW")
+                
+                # Match length to num_timesteps
+                if len(load_data) > num_timesteps:
+                    load_data = load_data.iloc[:num_timesteps]
+                elif len(load_data) < num_timesteps:
+                    # Repeat the pattern if needed
+                    repeats = (num_timesteps // len(load_data)) + 1
+                    load_data = pd.concat([load_data] * repeats, ignore_index=True).iloc[:num_timesteps]
+                
+                logging.info(f"Loaded Load data from: {load_file}")
+                logging.info(f"  Load range: {load_data.min():.2f} - {load_data.max():.2f} kW")
+                self.load_data = load_data.reset_index(drop=True)
+                return self.load_data
+                
+            except Exception as e:
+                logging.warning(f"Error loading Load file {load_file}: {e}")
+                return None
+        else:
+            logging.warning(f"Load file not found: {load_path}")
             return None
     
     def load_electricity_prices(self, num_timesteps, freq='15min'):
@@ -363,56 +449,103 @@ class TimeseriesBuilder:
             logging.warning(f"Price file not found: {price_path}")
             return None
     
-    def load_additional_data(self, pv_file=None, load_file=None, price_file=None):
+    def load_additional_timeseries(self, timeseries_list, num_timesteps=None):
         """
-        Load additional timeseries data (PV, Load, Prices) from separate files
+        Load multiple additional timeseries data from files with custom column names
         
         Parameters:
         -----------
-        pv_file : str, optional
-            Path to PV data CSV file
-        load_file : str, optional
-            Path to load data CSV file
-        price_file : str, optional
-            Path to price data CSV file
+        timeseries_list : list of dict
+            List of dictionaries with keys:
+            - 'file_path': str, path to CSV file (relative to project root or absolute)
+            - 'column_name': str, name to give the column in output
+            - 'source_column': str or int, optional, column name or index to extract (default: auto-detect)
+            - 'unit_conversion': float, optional, multiply values by this factor (e.g., 0.001 for W to kW)
+        num_timesteps : int, optional
+            Number of timesteps needed (will trim or repeat data to match)
         
         Returns:
         --------
-        tuple : (pv_data, load_data, price_data)
+        dict : Dictionary with column_name as keys and pd.Series as values
+        
+        Example:
+        --------
+        timeseries_data = builder.load_additional_timeseries([
+            {'file_path': 'data/wind_power.csv', 'column_name': 'Wind_kW', 'source_column': 'power_W', 'unit_conversion': 0.001},
+            {'file_path': 'data/temperature.csv', 'column_name': 'Temp_C', 'source_column': 1}
+        ], num_timesteps=35040)
         """
-        pv_data = None
-        load_data = None
-        price_data = None
+        result = {}
         
-        data_dir = self.project_root / "data"
-        
-        if pv_file:
-            pv_path = data_dir / pv_file
-            if pv_path.exists():
-                df = pd.read_csv(pv_path)
-                pv_data = df.iloc[:, 1] if len(df.columns) > 1 else df.iloc[:, 0]
-                logging.info(f"Loaded PV data from {pv_file}")
-        
-        if load_file:
-            load_path = data_dir / load_file
-            if load_path.exists():
-                df = pd.read_csv(load_path)
-                load_data = df.iloc[:, 1] if len(df.columns) > 1 else df.iloc[:, 0]
-                logging.info(f"Loaded Load data from {load_file}")
-        
-        if price_file:
-            price_path = data_dir / price_file
-            if price_path.exists():
-                df = pd.read_csv(price_path)
-                # Look for price column
-                price_cols = [col for col in df.columns if 'price' in col.lower()]
-                if price_cols:
-                    price_data = df[price_cols[0]]
+        for ts_config in timeseries_list:
+            file_path = ts_config.get('file_path')
+            column_name = ts_config.get('column_name')
+            source_column = ts_config.get('source_column', None)
+            unit_conversion = ts_config.get('unit_conversion', 1.0)
+            
+            if not file_path or not column_name:
+                logging.warning(f"Skipping timeseries: missing file_path or column_name in {ts_config}")
+                continue
+            
+            # Handle relative and absolute paths
+            path = Path(file_path)
+            if not path.is_absolute():
+                path = self.project_root / file_path
+            
+            if not path.exists():
+                logging.warning(f"File not found: {path}")
+                continue
+            
+            try:
+                # Read CSV file
+                df = pd.read_csv(path)
+                
+                # Extract the appropriate column
+                if source_column is not None:
+                    if isinstance(source_column, str):
+                        # Column name specified
+                        if source_column in df.columns:
+                            data = df[source_column]
+                        else:
+                            logging.warning(f"Column '{source_column}' not found in {path.name}, using first data column")
+                            data = df.iloc[:, 1] if len(df.columns) > 1 else df.iloc[:, 0]
+                    elif isinstance(source_column, int):
+                        # Column index specified
+                        data = df.iloc[:, source_column]
+                    else:
+                        data = df.iloc[:, 1] if len(df.columns) > 1 else df.iloc[:, 0]
                 else:
-                    price_data = df.iloc[:, 1] if len(df.columns) > 1 else df.iloc[:, 0]
-                logging.info(f"Loaded price data from {price_file}")
+                    # Auto-detect: skip timestamp columns, use first data column
+                    data = df.iloc[:, 1] if len(df.columns) > 1 else df.iloc[:, 0]
+                
+                # Convert to numeric
+                data = pd.to_numeric(data, errors='coerce').fillna(0)
+                
+                # Apply unit conversion
+                if unit_conversion != 1.0:
+                    data = data * unit_conversion
+                    logging.info(f"Applied unit conversion factor {unit_conversion} to {column_name}")
+                
+                # Match length to num_timesteps if specified
+                if num_timesteps is not None:
+                    if len(data) > num_timesteps:
+                        data = data.iloc[:num_timesteps]
+                    elif len(data) < num_timesteps:
+                        # Repeat the pattern if needed
+                        repeats = (num_timesteps // len(data)) + 1
+                        data = pd.concat([data] * repeats, ignore_index=True).iloc[:num_timesteps]
+                
+                data = data.reset_index(drop=True)
+                result[column_name] = data
+                
+                logging.info(f"Loaded '{column_name}' from {path.name}")
+                logging.info(f"  Range: {data.min():.2f} - {data.max():.2f}")
+                
+            except Exception as e:
+                logging.error(f"Error loading timeseries from {path.name}: {e}")
+                continue
         
-        return pv_data, load_data, price_data
+        return result
 
 
 def main():
@@ -434,13 +567,26 @@ def main():
         # Read Emobpy results (returns list of tuples: [(df, filename), ...])
         emobpy_files = builder.read_emobpy_results()
         
-        # Optional: Load additional data (PV, Load, Prices)
-        # Uncomment and specify filenames if you have separate data files:
-        # pv_data, load_data, price_data = builder.load_additional_data(
-        #     pv_file="pv_timeseries.csv",
-        #     load_file="load_timeseries.csv",
-        #     price_file="strompreise_dayahead_2024_entsoe_DE_LU_15min.csv"
-        # )
+        # Optional: Load additional timeseries data
+        # Example usage - uncomment and customize as needed:
+        # additional_timeseries = builder.load_additional_timeseries([
+        #     {
+        #         'file_path': 'data/wind_power.csv',
+        #         'column_name': 'Wind_kW',
+        #         'source_column': 'power_W',
+        #         'unit_conversion': 0.001  # Convert W to kW
+        #     },
+        #     {
+        #         'file_path': 'results/some-folder/temperature.csv',
+        #         'column_name': 'Temperature_C',
+        #         'source_column': 1  # Use column index 1
+        #     },
+        #     {
+        #         'file_path': 'data/custom_load.csv',
+        #         'column_name': 'Custom_Load_kW'
+        #         # source_column auto-detects (uses first data column)
+        #     }
+        # ], num_timesteps=35040)
         
         # Process each file
         print(f"\nProcessing {len(emobpy_files)} file(s)...\n")
@@ -455,11 +601,17 @@ def main():
             # Build oemof input file
             df_output = builder.build_oemof_input(
                 emobpy_df,
-                output_filename=output_filename,
-                # pv_data=pv_data,      # uncomment if loaded
-                # load_data=load_data,  # uncomment if loaded
-                # price_data=price_data # uncomment if loaded
+                output_filename=output_filename
             )
+            
+            # Optional: Add additional timeseries columns after building
+            # if additional_timeseries:
+            #     for col_name, col_data in additional_timeseries.items():
+            #         df_output[col_name] = col_data
+            #     # Re-save with additional columns
+            #     output_path = builder.output_dir / output_filename
+            #     df_output.to_csv(output_path, index=False)
+            #     logging.info(f"Added {len(additional_timeseries)} additional timeseries columns")
         
         print("\n" + "="*60)
         print(f"✓ Successfully created {len(emobpy_files)} timeseries input file(s)!")
