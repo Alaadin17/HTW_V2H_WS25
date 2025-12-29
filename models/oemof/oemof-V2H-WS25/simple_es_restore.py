@@ -113,14 +113,40 @@ def extract_battery_data(results, storage_label):
         DataFrame mit Zeitreihen (SOC, charge, discharge).
     """
 
+    # Mögliche Bezeichnungen für Speicherinhalt/SOC
+    soc_column_names = [
+        # Standard
+        'storage_content', 'storage content',
+        # SOC
+        'soc', 'state of charge', 'state_of_charge', 'stateofcharge',
+        # Speicher/Storage
+        'speicher', 'storage', 'energy_storage', 'energiespeicher',
+        # Kapazität
+        'kapazitaet', 'kapazität', 'capacity', 'speicherkapazitaet', 'speicherkapazität',
+        # Batterie
+        'batterie', 'battery', 'battery_level', 'batterielevel',
+        # Ladezustand
+        'ladezustand', 'charge_level', 'chargelevel',
+        # Füllstand
+        'fuellstand', 'füllstand', 'fill_level', 'filllevel',
+        # Energie
+        'energie_speicher', 'energy_content', 'energieinhalt',
+        # Spezifisch
+        'es_content', 'es_soc', 'bess_soc', 'ess_soc', 'content'
+    ]
+    
     # Knoten extrahieren
     node_data = views.node(results, storage_label)
     sequences = node_data["sequences"]
     # Spaltennamen umbenennen für Lesbarkeit
     renamed_cols = {}
     for col in sequences.columns:
-        if col[1] == "storage_content":
-            renamed_cols[col] = "State_of_Charge"
+        # col ist ein Tuple, z.B. ((node1, node2), 'storage_content')
+        if len(col) > 1:
+            col_name = str(col[1]).lower().strip()
+            # Prüfe ob der Spaltenname eine bekannte SOC-Bezeichnung ist
+            if col_name in soc_column_names:
+                renamed_cols[col] = "State_of_Charge"
     df = sequences.rename(columns=renamed_cols)
     return df
 
@@ -205,5 +231,6 @@ if __name__ == "__main__":
     elec_flows_df = get_electricity_flows(main_results)
     battery_flows_df = extract_battery_data(main_results, "BEV_Storage")
     save_dataframe_to_csv(elec_flows_df, get_save_path(), case_to_study, ",")
+    save_dataframe_to_csv(battery_flows_df, get_save_path(), f"{case_to_study}_battery", ",")
     plot(elec_flows_df)
     plot(battery_flows_df)

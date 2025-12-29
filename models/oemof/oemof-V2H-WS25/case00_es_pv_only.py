@@ -5,7 +5,7 @@
             |                            |<---->BEV-Storage
 PV--------->|                            |
             |                            |
-Grid------->|                            |<---->Wallbox<----source_to_wallbox
+Grid------->|                            |<---->Wallbox
             |                            |
 excess_bel<-|                            |----->BEV_drive (driving demand)
             |                            |
@@ -140,15 +140,12 @@ class EnergySystemModel:
         self.debug = False  # Set number_of_timesteps to 3 to get a readable lp-file.
         # can we get electricity from grid?
         self.grid_supply = 30  # kW
-        self.wallbox_power = 11  # kW
-        self.simulation_time = 8760  # Ein Jahr
-        self.time_step = "15min"
+        self.wallbox_power = 22  # kW
+        self.BEV_Battery_Capacity = 100  # kWh battery capacity
 
-        ## variable_costs
-        self.PV_variable_costs = 0
-        self.Grid_variable_costs = 30
-        self.Grid_feed_in_costs = -7.9
-        self.Wallbox_variable_costs = 0
+        #self.simulation_time = 8760  # number of timesteps (8760 = 1 year with hourly resolution)
+        self.simulation_time = 35040   # number of timesteps (35040 = 1 year with 15min resolution)
+        self.time_step = "15min"
 
         self.Model()
 
@@ -219,6 +216,11 @@ class EnergySystemModel:
         - Wallbox (bidirectional converter)
         - BEV storage and BEV driving sink
         """
+        ## variable_costs
+        PV_variable_costs = 0
+        Grid_variable_costs = 30
+        Grid_feed_in_costs = -7.9
+        Wallbox_variable_costs = 0
 
         ### BUS
         # create the first Bus = electricity bus
@@ -229,26 +231,14 @@ class EnergySystemModel:
 
         self.es.add(self.b_el, self.b_bev)
 
-
-        # Source - Wallbox to BEV
-        source_to_wallbox = cmp.Source(
-                label="source_to_wallbox",
-                outputs={
-                    self.b_bev: flows.Flow(max=self.BEV_state, nominal_value=self.wallbox_power)
-                },
-            )
-        
-        self.es.add(source_to_wallbox)  
-
-        
-        # Wallbox as Transformer 
-        wallbox_to_BEV = cmp.Converter(
+        # Wallbox as Transformer
+        wallbox_to_BEV = cmp.Source(
             label="wallbox_to_BEV",
-            inputs={source_to_wallbox: flows.Flow()},
             outputs={
-                self.b_bev: flows.Flow()
-            },
-            conversion_factors={self.b_bev: 1.0},
+                self.b_bev: flows.Flow(max=self.BEV_state, 
+                                       nominal_value=self.wallbox_power,
+                                       variable_costs=Wallbox_variable_costs)
+            }
         )
         self.es.add(wallbox_to_BEV)
 
@@ -258,7 +248,7 @@ class EnergySystemModel:
                 label="pv",
                 outputs={
                     self.b_el: flows.Flow(
-                        fix=self.PV_load, nominal_value=1, variable_costs=self.PV_variable_costs
+                        fix=self.PV_load, nominal_value=1, variable_costs=PV_variable_costs
                     )
                 },
             )
@@ -269,7 +259,7 @@ class EnergySystemModel:
             label="grid-supply",
             outputs={
                 self.b_el: flows.Flow(
-                    variable_costs=self.Grid_variable_costs,
+                    variable_costs=Grid_variable_costs,
                     nominal_value=self.grid_supply,
                 )
             },
@@ -279,7 +269,7 @@ class EnergySystemModel:
         # create excess component for the electricity bus to allow overproduction
         self.es.add(
             cmp.Sink(
-                label="excess_bel", inputs={self.b_el: flows.Flow(variable_costs=self.Grid_feed_in_costs)}
+                label="excess_bel", inputs={self.b_el: flows.Flow(variable_costs=Grid_feed_in_costs)}
             )
         )
 
@@ -298,7 +288,7 @@ class EnergySystemModel:
             label="BEV_Storage",
             inputs={self.b_bev: flows.Flow()},       # charging from the mobility bus
             outputs={self.b_bev: flows.Flow()},      # discharging to the mobility bus
-            nominal_storage_capacity=45,        # kWh battery capacity
+            nominal_storage_capacity=self.BEV_Battery_Capacity,        # kWh battery capacity
             min_storage_level=0.2,              # minimum SOC (20 %)
             max_storage_level=0.95,             # maximum SOC (95 %)
             initial_storage_level=0.95,         # initial SOC (95 %)
@@ -315,7 +305,7 @@ class EnergySystemModel:
                 label="BEV_drive",
                 inputs={
                     self.b_bev: flows.Flow(
-                        fix=self.BEV_consumption * 4,  # time series of driving consumption (kW)
+                        fix=self.BEV_consumption / 0.25,  # time series of driving consumption (kW)
                         nominal_value=1,  # scaling factor (1 keeps units consistent)
                     )
                 },
@@ -427,4 +417,4 @@ class EnergySystemModel:
 
 
 if __name__ == "__main__":
-    Energysystem = EnergySystemModel("case00_es_pv_only")
+    Energysystem = EnergySystemModel("case1")

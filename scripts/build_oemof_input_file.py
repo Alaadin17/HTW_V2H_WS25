@@ -596,12 +596,12 @@ def main():
             print("-" * 60)
             
             # Generate output filename based on source file
-            output_filename = f"input_timeseries_{source_file.replace('.csv', '')}.csv"
+            #output_filename = f"input_timeseries_{source_file.replace('.csv', '')}.csv"
             
             # Build oemof input file
             df_output = builder.build_oemof_input(
                 emobpy_df,
-                output_filename=output_filename
+                output_filename= "input_timeseries.csv" #output_filename
             )
             
             # Optional: Add additional timeseries columns after building
