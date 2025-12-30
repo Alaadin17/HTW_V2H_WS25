@@ -79,12 +79,12 @@ class SystemConfig:
     grid_supply_power_kW: float = 30.0
     
     # Stationärer Batteriespeicher-Parameter
-    battery_capacity_kWh: float = 10.0  # Kapazität des Hausbatteriespeichers
+    battery_capacity_kWh: float = 10.2  # Kapazität des Hausbatteriespeichers von BYD B-Box Premium HVS 10.2 Battery Storage 10.24 kWh
     battery_min_soc: float = 0.1  # Minimaler Ladezustand (10%)
     battery_max_soc: float = 1.0  # Maximaler Ladezustand (100%)
     battery_initial_soc: float = 0.5  # Anfangs-Ladezustand (50%)
     battery_efficiency: float = 0.95  # Wirkungsgrad beim Laden/Entladen
-    battery_max_power_kW: float = 5.0  # Maximale Lade-/Entladeleistung
+    battery_max_power_kW: float = 10.0  # Maximale Lade-/Entladeleistung (AC Coupling) von Fronius Symo GEN24 10.0 Plus Hybrid-Inverter
     
     # Kosten (€/MWh oder €/kWh)
     pv_variable_costs: float = 0.0
@@ -181,7 +181,7 @@ def validate_and_clean_timeseries(df: pd.DataFrame) -> pd.DataFrame:
     # Prüfe auf NaN-Werte
     nan_counts = df_clean[["PV_kW", "Load_kW"]].isna().sum()
     if nan_counts.any():
-        logging.warning(f"NaN-Werte gefunden:\n{nan_counts[nan_counts > 0]}"
+        logging.warning(f"NaN-Werte gefunden:\n{nan_counts[nan_counts > 0]}")
         df_clean = df_clean.fillna(0)
     
     logging.info(f"Zeitreihen validiert: {len(df_clean)} Zeitschritte")
