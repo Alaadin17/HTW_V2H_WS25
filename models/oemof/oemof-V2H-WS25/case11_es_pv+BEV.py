@@ -1,414 +1,535 @@
 """
+oemof Energy System Model für PV + BEV System
 
-        Bus_ele                      Bus_BEV
+Verbesserungen gegenüber der Original-Version:
+- Konfigurationsparameter als Dataclass für bessere Übersicht
+- Trennung von Datenladung und Systemerstellung
+- Verwendung von pathlib statt hardcoded Pfaden
+- Bessere Fehlerbehandlung
+- Type Hints für bessere Code-Qualität
+- Logging-Konfiguration als separate Methode
+- Validierung der Eingangsdaten
+
+System-Topologie:
+        Bus_electricity              Bus_mobility
             |                            |
-            |                            |<---->BEV-Storage
-PV--------->|                            |
-            |----------Wallbox---------->|
-Grid------->|                            |
-            |<---------Wallbox-----------|
-excess_bel<-|                            |-----> BEV_drive (driving demand)
+PV--------->|                            |<---->BEV_battery
+            |                            |
+Grid------->|<--------Wallbox----------->|------>BEV_consumption (Sink)
+            |        (Converter)         |
+excess------|                            |
             |                            |
 demand<-----|                            |
 
-- Bus_ele:     Household electricity bus (PV, grid, house demand, V2H)
-- Bus_BEV:     Mobility / BEV bus (battery and driving demand)
-- BEV_Storage: Battery storage of the BEV
-- Wallbox:     Bidirectional charger connecting Bus_ele and Bus_BEV
-- BEV_drive:   Energy demand for driving (traction), modelled as a sink on Bus_BEV
+Komponenten:
+- Bus_electricity:  Haushalts-Elektrizitätsbus (PV, Netz, Hausbedarf, Überschuss)
+- Bus_mobility:     Mobilitäts-/BEV-Bus (Batterie und Fahrbedarf)
+- PV:               Photovoltaik-Anlage (Source)
+- Grid:             Netzanschluss (Source für Bezug, Sink für Einspeisung via excess)
+- Wallbox:          Ladestation als Converter zwischen electricity und mobility Bus
+                    - Input: Bus_electricity (variable_costs=0.0 für maximales Laden)
+                    - Output: Bus_mobility (max=BEV_at_home, nominal=11 kW)
+- BEV_battery:      Batteriespeicher (77 kWh, SOC 20-95%, balanced=False)
+- BEV_consumption:  Fahrverbrauch als separater Sink (fix=consumption/0.25 [kW])
+- excess:           Überschuss-Senke für Netzeinspeisung
+- demand:           Haushaltslast
+
+Wichtige Hinweise:
+1. Wallbox ist CONVERTER (nicht Source) - verbindet beide Busse
+2. BEV_consumption als SEPARATER SINK
+3. variable_costs=0.0 an Wallbox → maximiert Ladevorgänge
+4. Consumption in kW umgerechnet (kWh/0.25)
 """
 
 ###########################################################################
-# imports
+# Imports
 ###########################################################################
 import logging
-import os
-import pandas as pd
-from oemof.tools import logger
-
-from oemof.solph import EnergySystem
-from oemof.solph import Model
-from oemof.solph import buses
-from oemof.solph import components as cmp
+from dataclasses import dataclass
 from pathlib import Path
-
-from oemof.solph import flows
-from oemof.solph import helpers
-from oemof.solph import processing
-from pyomo.opt import SolverStatus, TerminationCondition
+from typing import Optional, Tuple
 import warnings
 
-# Storage
+import pandas as pd
+from oemof.solph import (
+    EnergySystem,
+    Model,
+    buses,
+    components as cmp,
+    flows,
+    helpers,
+    processing,
+)
+from oemof.tools import logger
+from pyomo.opt import SolverStatus, TerminationCondition
 
-# plot
 
-import tkinter as tk
-from tkinter import filedialog
+###########################################################################
+# Konfiguration
+###########################################################################
+@dataclass
+class SystemConfig:
+    """Konfigurationsparameter für das Energiesystem"""
+    
+    # Zeitliche Parameter
+    start_date: str = "2022-01-01"
+    periods: int = 96  # 15-Minuten-Schritte (96 = 1 Tag für Debug)
+    freq: str = "15min"
+    
+    # Solver-Einstellungen
+    solver: str = "cbc"
+    solver_verbose: bool = False
+    debug: bool = True  # DEBUG-MODUS für LP-Datei
+    
+    # System-Parameter
+    grid_supply_power_kW: float = 30.0
+    wallbox_power_kW: float = 11.0
+    
+    # BEV-Parameter
+    bev_capacity_kWh: float = 77.0
+    bev_min_soc: float = 0.2
+    bev_max_soc: float = 0.95
+    bev_initial_soc: float = 0.95
+    
+    # Kosten (€/MWh oder €/kWh)
+    pv_variable_costs: float = 0.0
+    grid_variable_costs: float = 30.0
+    grid_feedin_tariff: float = -7.9  # Negativ, weil es Einnahmen sind
+    
+    # Ergebnis-Speicherung
+    should_dump_results: bool = True
+    dump_filename: str = "case00_pv_only"
+    
+    # Logging
+    log_filename: str = "oemof_case00.log"
+    log_screen_level: int = logging.INFO
+    log_file_level: int = logging.INFO  # DEBUG würde oemof verlangsamen
 
 
-def get_file_path():
-    file_path = os.getcwd()
-    start_dir = os.path.abspath(
-        os.path.join(file_path, "..", "..")
-    )  # main directory of the repo
-    # Hauptfenster erstellen, aber verstecken
-    root = tk.Tk()
-    root.withdraw()
-
-    # Dateiauswahldialog öffnen mit Startverzeichnis
-    file_path = filedialog.askopenfilename(
-        title="Wählen Sie eine Datei aus",
-        initialdir=start_dir,  # Hier wird der Startordner gesetzt
-        filetypes=[("Excel- und CSV-Dateien", "*.xlsx *.xls *.csv")],
+###########################################################################
+# Hilfsfunktionen
+###########################################################################
+def setup_logging(config: SystemConfig) -> None:
+    """
+    Konfiguriert das Logging-System
+    
+    Parameters:
+    -----------
+    config : SystemConfig
+        Konfigurationsobjekt mit Logging-Parametern
+    """
+    logger.define_logging(
+        logfile=config.log_filename,
+        screen_level=config.log_screen_level,
+        file_level=config.log_file_level,
     )
 
-    if not file_path:
-        print("Keine Datei wurde ausgewählt")
-        return None
 
-    return file_path
-
-
-def get_timeseries():
+def load_timeseries(
+    input_file: Optional[Path] = None
+) -> Tuple[pd.DataFrame, Path]:
     """
-    Load the main time series (PV, household load, BEV state, prices, etc.)
-    using a path that is relative to the project root.
+    Lädt die Zeitreihendaten aus CSV
+    
+    Parameters:
+    -----------
+    input_file : Path, optional
+        Pfad zur Input-Datei. Falls None, wird der Standard-Pfad verwendet.
+        
+    Returns:
+    --------
+    df_timeseries : pd.DataFrame
+        DataFrame mit allen Zeitreihen
+    timeseries_path : Path
+        Pfad zur geladenen Datei
     """
-    # Ordner dieser Datei: .../HTW_V2H_WS2526/models/oemof/oemof-V2H-WS25
-    script_dir = Path(__file__).resolve().parent
-    print(script_dir)
+    if input_file is None:
+        script_dir = Path(__file__).resolve().parent
+        input_file = script_dir / "Input_timeseries" / "input_timeseries.csv"
+    
+    if not input_file.exists():
+        raise FileNotFoundError(f"Zeitreihen-Datei nicht gefunden: {input_file}")
+    
+    logging.info(f"Lade Zeitreihen aus: {input_file}")
+    df_timeseries = pd.read_csv(input_file, delimiter=",")
+    
+    # Validiere erforderliche Spalten
+    required_columns = [
+        "PV_kW", "Load_kW", "BEV_at_home", 
+        "consumption", "charging_power_kW"
+    ]
+    missing_cols = set(required_columns) - set(df_timeseries.columns)
+    if missing_cols:
+        raise ValueError(f"Fehlende Spalten in der Zeitreihen-Datei: {missing_cols}")
+    
+    return df_timeseries, input_file
 
-    # Pfad zur CSV-Datei relativ zum Skriptordner
-    timeseries_path = (
-        script_dir
-        / "Input_timeseries"
-        / "input_timeseries.csv"
-    )
 
-    print("📂 Lade Timeseries aus:", timeseries_path)
+def validate_and_clean_timeseries(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Validiert und bereinigt die Zeitreihendaten
+    
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        Rohdaten
+        
+    Returns:
+    --------
+    df_clean : pd.DataFrame
+        Bereinigte Daten
+    """
+    df_clean = df.copy()
+    
+    # PV-Werte müssen >= 0 sein (negative Werte → 0)
+    df_clean["PV_kW"] = df_clean["PV_kW"].clip(lower=0)
+    
+    # Prüfe auf NaN-Werte
+    nan_counts = df_clean[["PV_kW", "Load_kW", "BEV_at_home", "consumption"]].isna().sum()
+    if nan_counts.any():
+        logging.warning(f"NaN-Werte gefunden:\n{nan_counts[nan_counts > 0]}")
+        df_clean = df_clean.fillna(0)
+    
+    # Validiere BEV_at_home (sollte binär sein)
+    if not df_clean["BEV_at_home"].isin([0, 1]).all():
+        logging.warning("BEV_at_home enthält nicht-binäre Werte. Runde auf 0/1.")
+        df_clean["BEV_at_home"] = df_clean["BEV_at_home"].round().astype(int)
+    
+    logging.info(f"Zeitreihen validiert: {len(df_clean)} Zeitschritte")
+    logging.info(f"  PV: {df_clean['PV_kW'].min():.2f} - {df_clean['PV_kW'].max():.2f} kW")
+    logging.info(f"  Last: {df_clean['Load_kW'].min():.2f} - {df_clean['Load_kW'].max():.2f} kW")
+    logging.info(f"  BEV Verbrauch: {df_clean['consumption'].sum():.2f} kWh gesamt")
+    
+    return df_clean
 
-    df_timeseries = pd.read_csv(timeseries_path, delimiter=",")
-    return df_timeseries
 
+###########################################################################
+# Hauptklasse
+###########################################################################
 class EnergySystemModel:
-    # *************************************************************************
-    # ********** PART 1 - Define and optimise the energy system ***************
-    # *************************************************************************
-    def __init__(self, dump_filename):
-        super().__init__()
-        # ****** Defining Variables ******
-        self.dump_filename = dump_filename
-        self.start_date = None
-        self.periods = None
-        self.freq = None
-        self.time_index = None
-        self.es = None
-        self.model = None
-        self.results = None
-        self.bus_df = None
-        self.data = None
-        self.ev_params = None
-        self.df_timeseries = None
-        self.BEV_timeseries = None
-        self.electricity_dataframe = None
-
-        # initiate the logger (see the API docs for more information)
-        logger.define_logging(
-            logfile="oemof_example.log",
-            screen_level=logging.INFO,
-            file_level=logging.INFO,
-        )
-
-        # Output Info
-        logging.info("Initialize the energy system")
-
-        self.main()
-
-    def main(self):
-        self.should_dump_results = True  # oder False je nach Bedarf
-        self.solver = "cbc"  # 'glpk', 'gurobi',....
-        self.solver_verbose = False  # show/hide solver output
-        self.solve_kwargs = None
-        self.cmdline_options = None
-        self.debug = False  # Set number_of_timesteps to 3 to get a readable lp-file.
-        # can we get electricity from grid?
-        self.grid_supply = 30  # kW
-        self.wallbox_power = 11  # kW
-        self.simulation_time = 672  # Eine Woche
-        self.time_step = "15min"
-        self.Model()
-
-    def Model(self):
-        logging.info("define_time_index")
-        self.define_time_index()
-        logging.info("define_timeseries")
-        self.define_timeseries()
-        logging.info("Create oemof objects")
-        self.create_oemof_objects()
-        logging.info("Optimise the energy system")
-        self.optimise_energysystem()
-        # if tee_switch is true solver messages will be displayed
-        logging.info("Solve the optimization problem")
-        self.solve_energysystem()
-        logging.info("extract_results")
-        self.extract_results()
-        logging.info("Dump the energy system and the results.")
-        self.dump_results()
-        logging.info("energy system has been dumped.")
-
-    def define_time_index(self):
+    """
+    Modelliert und optimiert ein Energiesystem mit PV und BEV
+    """
+    
+    def __init__(
+        self, 
+        config: Optional[SystemConfig] = None,
+        timeseries_file: Optional[Path] = None
+    ):
         """
-        Define the time index of the model (start date, number of periods, frequency)
-        and initialise the EnergySystem object.
+        Initialisiert das Energiesystem-Modell
+        
+        Parameters:
+        -----------
+        config : SystemConfig, optional
+            Konfiguration. Falls None, wird Standard verwendet.
+        timeseries_file : Path, optional
+            Pfad zur Zeitreihen-Datei. Falls None, Standard-Pfad.
         """
-        self.start_date = "2022-01-01"
-        self.periods = self.simulation_time
-        self.freq = str(self.time_step)
+        self.config = config or SystemConfig()
+        self.timeseries_file = timeseries_file
+        
+        # System-Variablen
+        self.time_index: Optional[pd.DatetimeIndex] = None
+        self.es: Optional[EnergySystem] = None
+        self.model: Optional[Model] = None
+        self.df_timeseries: Optional[pd.DataFrame] = None
+        
+        # Setup
+        setup_logging(self.config)
+        logging.info("=" * 80)
+        logging.info("Initialisiere Energy System Model")
+        logging.info("=" * 80)
+        
+    def run(self) -> None:
+        """Führt die komplette Modellierung und Optimierung aus"""
+        try:
+            self._load_data()
+            self._create_time_index()
+            self._create_energy_system()
+            self._create_components()
+            self._optimize()
+            self._solve()
+            self._extract_results()
+            self._save_results()
+            
+            logging.info("=" * 80)
+            logging.info("[SUCCESS] Simulation erfolgreich abgeschlossen")
+            logging.info("=" * 80)
+            
+        except Exception as e:
+            logging.error(f"❌ Fehler während der Simulation: {e}")
+            raise
+    
+    def _load_data(self) -> None:
+        """Lädt und validiert die Eingangsdaten"""
+        logging.info("Schritt 1: Lade Zeitreihendaten")
+        df_raw, _ = load_timeseries(self.timeseries_file)
+        self.df_timeseries = validate_and_clean_timeseries(df_raw)
+        
+        # Prüfe Länge der Zeitreihen
+        if len(self.df_timeseries) < self.config.periods:
+            logging.warning(
+                f"Zeitreihen zu kurz! Verfügbar: {len(self.df_timeseries)}, "
+                f"Benötigt: {self.config.periods}. Kürze Simulation."
+            )
+            self.config.periods = len(self.df_timeseries)
+    
+    def _create_time_index(self) -> None:
+        """Erstellt den Zeit-Index für die Simulation"""
+        logging.info("Schritt 2: Erstelle Zeit-Index")
         self.time_index = pd.date_range(
-            start=self.start_date, periods=self.periods, freq=self.freq
+            start=self.config.start_date,
+            periods=self.config.periods,
+            freq=self.config.freq
         )
-        self.es = EnergySystem(timeindex=self.time_index, infer_last_interval=True)
-
-    def define_timeseries(self):
-        """
-        Import all required time series for the model (PV, demand, BEV, prices).
-        """
-        logging.info("Import general timeseries")
-        self.df_timeseries = get_timeseries()
-        logging.info("Import BEV-timeseries")
-        # self.BEV_timeseries = get_BEV_timeserie()
-        # Zeitreihen
-        self.BEV_state = self.df_timeseries["BEV_at_home"]
-        self.PV_load = self.df_timeseries["PV_kW"]
-        self.demand = self.df_timeseries["Load_kW"]
-        self.BEV_consumption = self.df_timeseries["consumption"]
-        self.BEV_charging = self.df_timeseries["charging_power_kW"]
-        self.electricity_price = self.df_timeseries["day_ahead_price[€/MWh]"] * (
-            100 / 1000
+        logging.info(
+            f"  Zeitraum: {self.time_index[0]} bis {self.time_index[-1]}"
         )
-
-    def create_oemof_objects(self):
-        """
-        Create all oemof.solph components:
-        - Buses (electricity and mobility)
-        - PV source, grid source, excess and demand sinks
-        - Wallbox (bidirectional converter)
-        - BEV storage and BEV driving sink
-        """
-        ## variable_costs
-        PV_variable_costs = 0
-        Grid_variable_costs = 30
-        Grid_feed_in_costs = -7.9
-        Wallbox_variable_costs = 0
-
-        # letzte Schritte
-        # output b_bev (max=self.BEV_state,nominal_value=self.wallbox_power)
-
-        ### BUS
-        # create the first Bus = electricity bus
-        self.b_el = buses.Bus(label="electricity")
-
-        # define the connected bus = mobility bus
+        logging.info(f"  Anzahl Zeitschritte: {self.config.periods}")
+    
+    def _create_energy_system(self) -> None:
+        """Erstellt das oemof EnergySystem-Objekt"""
+        logging.info("Schritt 3: Erstelle Energy System")
+        self.es = EnergySystem(
+            timeindex=self.time_index,
+            infer_last_interval=True
+        )
+        logging.info(f"  EnergySystem erstellt mit {len(self.time_index)} Zeitschritten")
+    
+    def _create_components(self) -> None:
+        """Erstellt alle Komponenten (Busse, Quellen, Senken, Speicher)"""
+        logging.info("Schritt 4: Erstelle Komponenten")
+        
+        # Extrahiere Zeitreihen (nur bis periods)
+        pv_timeseries = self.df_timeseries["PV_kW"].iloc[:self.config.periods]
+        load_timeseries = self.df_timeseries["Load_kW"].iloc[:self.config.periods]
+        bev_at_home = self.df_timeseries["BEV_at_home"].iloc[:self.config.periods]
+        # Consumption in kWh pro Zeitschritt → muss in kW umgewandelt werden
+        bev_consumption_kWh = self.df_timeseries["consumption"].iloc[:self.config.periods]
+        bev_consumption = bev_consumption_kWh / 0.25  # kWh → kW für fixed_losses_absolute
+        # ===== BUSSE =====
+        logging.info("  - Erstelle Busse")
+        b_el = buses.Bus(label="electricity")
         b_bev = buses.Bus(label="mobility", balanced=True)
-
-        self.es.add(self.b_el, b_bev)
-
-        # Wallbox as Transformer
-        wallbox_to_BEV = cmp.Converter(
-            label="wallbox_to_BEV",
-            inputs={self.b_el: flows.Flow()},
-            outputs={
-                b_bev: flows.Flow(max=self.BEV_state, nominal_value=self.wallbox_power)
-            },
-            conversion_factors={b_bev: 1.0},
-        )
-        self.es.add(wallbox_to_BEV)
-
-        wallbox_from_BEV = cmp.Converter(
-            label="wallbox_from_BEV",
-            inputs={b_bev: flows.Flow()},
-            outputs={
-                self.b_el: flows.Flow(
-                    max=self.BEV_state, nominal_value=self.wallbox_power
-                )
-            },
-            conversion_factors={b_bev: 1.0},
-        )
-        self.es.add(wallbox_from_BEV)
-
-        # create fixed source object representing pv power plants
+        self.es.add(b_el, b_bev)
+        
+        # ===== ELEKTRIZITÄTSBUS KOMPONENTEN =====
+        logging.info("  - Erstelle PV-Anlage")
         self.es.add(
             cmp.Source(
                 label="pv",
                 outputs={
-                    self.b_el: flows.Flow(
-                        fix=self.PV_load, nominal_value=1, variable_costs=PV_variable_costs
+                    b_el: flows.Flow(
+                        fix=pv_timeseries,
+                        nominal_value=1,
+                        variable_costs=self.config.pv_variable_costs
                     )
                 },
             )
         )
-
-        # Grid as Source
-        self.grid = cmp.Source(
-            label="grid-supply",
-            outputs={
-                self.b_el: flows.Flow(
-                    variable_costs=Grid_variable_costs,
-                    nominal_value=self.grid_supply,
-                )
-            },
-        )
-        self.es.add(self.grid)
-
-        # create excess component for the electricity bus to allow overproduction
+        
+        logging.info("  - Erstelle Netz-Anbindung")
         self.es.add(
-            cmp.Sink(
-                label="excess_bel", inputs={self.b_el: flows.Flow(variable_costs=Grid_feed_in_costs)}
+            cmp.Source(
+                label="grid_supply",
+                outputs={
+                    b_el: flows.Flow(
+                        variable_costs=self.config.grid_variable_costs,
+                        nominal_value=self.config.grid_supply_power_kW
+                    )
+                },
             )
         )
-
-        # create simple sink object representing the electrical demand
+        
+        logging.info("  - Erstelle Netz-Einspeisung (Überschuss-Senke)")
         self.es.add(
             cmp.Sink(
-                label="demand",
-                inputs={self.b_el: flows.Flow(fix=self.demand, nominal_value=1)},
+                label="excess_electricity",
+                inputs={
+                    b_el: flows.Flow(
+                        variable_costs=self.config.grid_feedin_tariff
+                    )
+                }
             )
         )
-
-        # --- BEV STORAGE AND DRIVING ---
-
-        # add BEV storage (battery only, no driving losses included)
-        BEV = cmp.GenericStorage(
-            label="BEV_Storage",
-            inputs={b_bev: flows.Flow()},       # charging from the mobility bus
-            outputs={b_bev: flows.Flow()},      # discharging to the mobility bus
-            nominal_storage_capacity=45,        # kWh battery capacity
-            min_storage_level=0.2,              # minimum SOC (20 %)
-            max_storage_level=0.95,             # maximum SOC (95 %)
-            initial_storage_level=0.95,         # initial SOC (95 %)
-            # Optional: real standby losses could be added here, e.g.:
-            # fixed_losses_relative=0.0005,     # ~0.05 % per time step
-        )
-        self.es.add(BEV)
-
-        # Driving: model energy consumption as a separate demand on the mobility bus
-        # This represents traction energy needed during driving periods.
-        # Whenever BEV_consumption > 0, the storage must discharge to satisfy this sink.
+        
+        logging.info("  - Erstelle Haushaltslast")
         self.es.add(
             cmp.Sink(
-                label="BEV_drive",
+                label="household_demand",
+                inputs={
+                    b_el: flows.Flow(
+                        fix=load_timeseries,
+                        nominal_value=1
+                    )
+                },
+            )
+        )
+        
+        # ===== MOBILITÄTSBUS KOMPONENTEN =====
+        logging.info("  - Erstelle Wallbox (Ladestation als Transformer)")
+        self.es.add(
+            cmp.Converter(
+                label="wallbox",
+                inputs={
+                    b_el: flows.Flow(
+                        variable_costs=0.0  # Kostenlos laden → Speicher lädt so oft wie möglich
+                    )
+                },
+                outputs={
+                    b_bev: flows.Flow(
+                        max=bev_at_home,  # Kann nur laden, wenn BEV zu Hause
+                        nominal_value=self.config.wallbox_power_kW
+                    )
+                },
+                conversion_factors={b_bev: 1.0}  # 100% Effizienz
+            )
+        )
+        
+        logging.info("  - Erstelle BEV-Verbrauch (Fahrverbrauch als Sink)")
+        self.es.add(
+            cmp.Sink(
+                label="bev_consumption",
                 inputs={
                     b_bev: flows.Flow(
-                        fix=self.BEV_consumption * 4,  # time series of driving consumption (kW)
-                        nominal_value=1,  # scaling factor (1 keeps units consistent)
+                        fix=bev_consumption,  # Consumption in kW (bereits umgerechnet)
+                        nominal_value=1
                     )
                 },
             )
         )
-
-        ##########################################################################
-        # Optimise the energy system and plot the results
-        ##########################################################################
-
-    def optimise_energysystem(self):
-        """
-        Create the oemof.solph operational model from the defined EnergySystem.
-        Optionally write an LP file if debug mode is enabled.
-        """
-        # initialise the operational model
-        self.model = Model(self.es)
-
-        # model.receive_duals() #Schattenpreis
-
-        if self.debug:
-            file_path = os.path.join(
-                helpers.extend_basic_path("lp_files"), "basic_example.lp"
+        
+        logging.info("  - Erstelle BEV-Batterie")
+        self.es.add(
+            cmp.GenericStorage(
+                label="bev_battery",
+                inputs={b_bev: flows.Flow()},
+                outputs={b_bev: flows.Flow()},
+                nominal_storage_capacity=self.config.bev_capacity_kWh,
+                min_storage_level=self.config.bev_min_soc,
+                max_storage_level=self.config.bev_max_soc,
+                initial_storage_level=self.config.bev_initial_soc,
+                loss_rate=0.0,
+                balanced=False,  # Speicher muss am Ende nicht gleich Anfang sein
             )
-            logging.info(f"Store lp-file in {file_path}.")
-            io_option = {"symbolic_solver_labels": True}
-            self.model.write(file_path, io_options=io_option)
-
-    def solve_energysystem(self):
-        """
-        Solves an oemof.solph model and checks if the solution is optimal.
-
-        Raises RuntimeError if infeasible or failed.
-        """
+        )
+        
+        logging.info(f"  [OK] {len(self.es.nodes)} Komponenten erstellt")
+    
+    def _optimize(self) -> None:
+        """Erstellt das Optimierungsmodell"""
+        logging.info("Schritt 5: Erstelle Optimierungsmodell")
+        self.model = Model(self.es)
+        
+        # Optional: LP-Datei schreiben für Debugging
+        if self.config.debug:
+            lp_path = Path(helpers.extend_basic_path("lp_files")) / "debug_model.lp"
+            logging.info(f"  Debug-Modus: Schreibe LP-Datei nach {lp_path}")
+            lp_path.parent.mkdir(parents=True, exist_ok=True)
+            self.model.write(str(lp_path), io_options={"symbolic_solver_labels": True})
+    
+    def _solve(self) -> None:
+        """Löst das Optimierungsmodlem"""
+        logging.info("Schritt 6: Löse Optimierungsproblem")
+        logging.info(f"  Solver: {self.config.solver}")
+        
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=UserWarning)
-            try:
-                # if tee_switch is true solver messages will be displayed
-                results = self.model.solve(
-                    solver=self.solver, solve_kwargs={"tee": self.solver_verbose}
+            
+            results = self.model.solve(
+                solver=self.config.solver,
+                solve_kwargs={"tee": self.config.solver_verbose}
+            )
+            
+            # Prüfe Solver-Status
+            status = results.solver.status
+            termination = results.solver.termination_condition
+            
+            if status != SolverStatus.ok or termination != TerminationCondition.optimal:
+                error_msg = (
+                    f"\n❌ Optimierung fehlgeschlagen!\n"
+                    f"  Status: {status}\n"
+                    f"  Terminierung: {termination}\n"
+                    f"  Nachricht: {results.solver.message}\n"
                 )
-
-                # Check solver status
-                status = results.solver.status
-                termination = results.solver.termination_condition
-
-                if (status != SolverStatus.ok) or (
-                    termination != TerminationCondition.optimal
-                ):
-                    msg = (
-                        f"\n❌ The energy system could not find a solution.\n"
-                        f"Solver status: {status}\n"
-                        f"Termination condition: {termination}\n"
-                        f"Message: {results.solver.message}\n"
-                        f"⛔ Simulation aborted.\n"
-                    )
-                    raise RuntimeError(msg)
-
-                print("✅ The model was solved successfully.")
-
-            except RuntimeError as e:
-                # Raise the warning or stop
-                print(str(e))
-                exit()
-
-    def extract_results(self):
-        # add results to the energy system to make it possible to store them.
+                logging.error(error_msg)
+                raise RuntimeError(error_msg)
+            
+            logging.info("  [OK] Optimierung erfolgreich")
+            logging.info(f"  Objective Value: {self.model.objective():.2f} €")
+    
+    def _extract_results(self) -> None:
+        """Extrahiert die Ergebnisse aus dem gelösten Modell"""
+        logging.info("Schritt 7: Extrahiere Ergebnisse")
         self.es.results["main"] = processing.results(self.model)
         self.es.results["meta"] = processing.meta_results(self.model)
-
-    def dump_results(self):
-        """Speichere das erzeugte EnergySystem und die Ergebnisse als Dump.
-
-        Ziel:
-            - Strukturierte Ablage der Ergebnisse innerhalb des Repositorys
-              unter `results/oemof-V2H-WS25/dumps/`.
-
-        Wichtige Hinweise:
-            - Umschalten über `self.should_dump_results` (False = kein Speichern).
-            - Der Pfad wird mit `pathlib` plattformunabhängig aufgebaut.
-            - Falls sich die Projektstruktur ändert, kann `project_root` leicht
-              angepasst werden (Eltern-Ebene des Skriptordners).
-            - Bei Fehlern wird eine verständliche Meldung ausgegeben, statt still
-              zu scheitern.
-        """
-        # Skriptordner: .../HTW_V2H_WS25/models/oemof/oemof-V2H-WS25
-        script_dir = Path(__file__).resolve().parent
-        # Projektwurzel (2 Ebenen hoch: oemof-V2H-WS25 -> oemof -> models -> Root)
-        project_root = script_dir.parents[2]
-
-        # Zielpfad für Dumps (innerhalb des Repos, versionierbar wenn gewünscht)
-        dump_path = project_root / "results" / "oemof-V2H-WS25" / "dumps"
-
-        # Ordner (rekursiv) anlegen, falls nicht vorhanden
-        dump_path.mkdir(parents=True, exist_ok=True)
-        print(f"💾 Dump-Ziel: {dump_path}")
-
-        # Früh beenden, falls Speichern deaktiviert wurde
-        if not self.should_dump_results:
-            print("ℹ️ Dump deaktiviert (self.should_dump_results = False).")
+        logging.info("  [OK] Ergebnisse extrahiert")
+    
+    def _save_results(self) -> None:
+        """Speichert die Ergebnisse als Dump"""
+        if not self.config.should_dump_results:
+            logging.info("Schritt 8: Ergebnis-Speicherung übersprungen (deaktiviert)")
             return
-
-        # Schreibversuch mit Fehlerbehandlung
+        
+        logging.info("Schritt 8: Speichere Ergebnisse")
+        
+        # Bestimme Speicherpfad
+        script_dir = Path(__file__).resolve().parent
+        project_root = script_dir.parents[2]
+        dump_path = project_root / "results" / "oemof-V2H-WS25" / "dumps"
+        dump_path.mkdir(parents=True, exist_ok=True)
+        
         try:
-            self.es.dump(dpath=dump_path, filename=self.dump_filename)
-            print("✅ Dump erfolgreich geschrieben.")
+            self.es.dump(
+                dpath=str(dump_path),
+                filename=self.config.dump_filename
+            )
+            logging.info(f"  [OK] Dump gespeichert: {dump_path / self.config.dump_filename}")
         except Exception as e:
-            print(f"❌ Fehler beim Schreiben des Dumps: {e}")
+            logging.error(f"  ❌ Fehler beim Speichern: {e}")
+            raise
+
+
+###########################################################################
+# Hauptprogramm
+###########################################################################
+def main():
+    """Hauptfunktion"""
+    # Erstelle Konfiguration (kann angepasst werden)
+    config = SystemConfig(
+        # Zeitliche Parameter
+        start_date="2022-01-01",
+        periods=35040,  # 1 Jahr mit 15-Minuten-Auflösung
+        
+        # System-Parameter
+        grid_supply_power_kW=30.0,
+        wallbox_power_kW=22.0,
+        
+        # BEV-Parameter
+        bev_capacity_kWh=77.0,
+        bev_min_soc=0.2,
+        bev_max_soc=0.95,
+        bev_initial_soc=0.95,
+        
+        # Kosten
+        pv_variable_costs=0.0,
+        grid_variable_costs=30.0,  # €/MWh
+        grid_feedin_tariff=-7.9,  # €/MWh
+        
+        # Ergebnis-Speicherung
+        should_dump_results=True,
+        dump_filename="case00_pv_only",
+        
+        # Debugging
+        debug=False,
+        solver_verbose=False,
+    )
+    
+    # Erstelle und führe Modell aus
+    model = EnergySystemModel(config=config)
+    model.run()
 
 
 if __name__ == "__main__":
-    Energysystem = EnergySystemModel("case4_es_charger_limited_BEV_transformer_bi_directional")
+    main()
