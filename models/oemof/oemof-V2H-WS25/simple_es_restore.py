@@ -59,18 +59,18 @@ def get_electricity_flows(results_df) -> pd.DataFrame:
     Dictionary_flows_electricity = {}
     results = results_df
     for k, v in results.items():
-        # Demand
-        if str(k[0]) == "electricity" and str(k[1]) == "demand":
+        # Demand (beide Varianten: alt "demand", neu "household_demand")
+        if str(k[0]) == "electricity" and str(k[1]) in ["demand", "household_demand"]:
             label = str("demand")  # label sicher als String
             flow = v["sequences"]["flow"]
             Dictionary_flows_electricity[label] = flow
-        # grid-feed-in
-        elif str(k[0]) == "electricity" and str(k[1]) == "excess_bel":
+        # grid-feed-in (beide Varianten)
+        elif str(k[0]) == "electricity" and str(k[1]) in ["excess_bel", "excess_electricity"]:
             label = str("grid-feed-in")  # label sicher als String
             flow = v["sequences"]["flow"]
             Dictionary_flows_electricity[label] = flow
         # grid-supply
-        elif str(k[0]) == "grid-supply" and str(k[1]) == "electricity":
+        elif str(k[0]) in ["grid-supply", "grid_supply"] and str(k[1]) == "electricity":
             label = str("grid-supply")  # label sicher als String
             flow = v["sequences"]["flow"]
             Dictionary_flows_electricity[label] = flow
@@ -219,8 +219,8 @@ def plot(
 
 
 if __name__ == "__main__":
-    case_0 = "case0"
-    case_1 = "case2_es_charger_limited_BEV_dumb"
+    case_0 = "case00_pv_only"
+    case_1 = "case1"
     case_2 = "case3_es_charger_limited_BEV_transformer_uni_directional"
     case_3 = "case4_es_charger_limited_BEV_transformer_bi_directional"
     case_to_study = case_0
@@ -229,7 +229,10 @@ if __name__ == "__main__":
     path = get_dump_path()
     main_results = restore_results(path, filename=case_to_study)[0]
     elec_flows_df = get_electricity_flows(main_results)
-    battery_flows_df = extract_battery_data(main_results, "BEV_Storage")
+    
+    # Storage-Label abhängig vom Case (alt: "BEV_Storage", neu: "bev_battery")
+    storage_label = "bev_battery" if "case00" in case_to_study else "BEV_Storage"
+    battery_flows_df = extract_battery_data(main_results, storage_label)
     save_dataframe_to_csv(elec_flows_df, get_save_path(), case_to_study, ",")
     save_dataframe_to_csv(battery_flows_df, get_save_path(), f"{case_to_study}_battery", ",")
     plot(elec_flows_df)
