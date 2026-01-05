@@ -27,10 +27,10 @@ Komponenten:
 - Bus_mobility:         Mobilitäts-/BEV-Bus (Batterie und Fahrbedarf)
 - PV:                   Photovoltaik-Anlage (Source)
 - Grid:                 Netzanschluss (Source für Bezug, Sink für Einspeisung via excess)
-- wallbox_charge:       Ladestation (Converter: electricity → mobility, η=95%)
+- wallbox_charge:       Ladestation (Converter: electricity -> mobility, eta=95%)
                         - variable_costs=0.0 für maximales Laden bei PV-Überschuss
                         - max=BEV_at_home (nur laden wenn zu Hause)
-- wallbox_discharge:    V2G-Funktion (Converter: mobility → electricity, η=90%)
+- wallbox_discharge:    V2G-Funktion (Converter: mobility -> electricity, eta=90%)
                         - variable_costs=5.0 €/MWh (verhindert unnötiges Zyklieren)
                         - max=BEV_at_home (nur entladen wenn zu Hause)
                         - Optional aktivierbar via enable_v2g
@@ -190,7 +190,7 @@ def validate_and_clean_timeseries(df: pd.DataFrame) -> pd.DataFrame:
     """
     df_clean = df.copy()
     
-    # PV-Werte müssen >= 0 sein (negative Werte → 0)
+    # PV-Werte müssen >= 0 sein (negative Werte -> 0)
     df_clean["PV_kW"] = df_clean["PV_kW"].clip(lower=0)
     
     # Prüfe auf NaN-Werte
@@ -314,9 +314,9 @@ class EnergySystemModel:
         pv_timeseries = self.df_timeseries["PV_kW"].iloc[:self.config.periods]
         load_timeseries = self.df_timeseries["Load_kW"].iloc[:self.config.periods]
         bev_at_home = self.df_timeseries["BEV_at_home"].iloc[:self.config.periods]
-        # Consumption in kWh pro Zeitschritt → muss in kW umgewandelt werden
+        # Consumption in kWh pro Zeitschritt -> muss in kW umgewandelt werden
         bev_consumption_kWh = self.df_timeseries["consumption"].iloc[:self.config.periods]
-        bev_consumption = bev_consumption_kWh / 0.25  # kWh → kW für fixed_losses_absolute
+        bev_consumption = bev_consumption_kWh / 0.25  # kWh -> kW für fixed_losses_absolute
         # ===== BUSSE =====
         logging.info("  - Erstelle Busse")
         b_el = buses.Bus(label="electricity")
@@ -379,13 +379,13 @@ class EnergySystemModel:
         #======================================
         # ===== MOBILITÄTSBUS KOMPONENTEN =====
         #======================================
-        logging.info("  - Erstelle Wallbox (Ladestation: electricity → mobility)")
+        logging.info("  - Erstelle Wallbox (Ladestation: electricity -> mobility)")
         self.es.add(
             cmp.Converter(
                 label="wallbox_charge",
                 inputs={
                     b_el: flows.Flow(
-                        variable_costs=0.0  # Kostenlos laden → bevorzugt PV-Überschuss
+                        variable_costs=0.0  # Kostenlos laden -> bevorzugt PV-Ueberschuss
                     )
                 },
                 outputs={
@@ -400,13 +400,13 @@ class EnergySystemModel:
         
         # V2G: Rückspeisung ins Hausnetz
         if self.config.enable_v2g:
-            logging.info("  - Erstelle V2G-Funktion (Entladung: mobility → electricity)")
+            logging.info("  - Erstelle V2G-Funktion (Entladung: mobility -> electricity)")
             self.es.add(
                 cmp.Converter(
                     label="wallbox_discharge",
                     inputs={
                         b_bev: flows.Flow(
-                            # Positive Kosten → wird nur genutzt bei hohen Strompreisen
+                            # Positive Kosten -> wird nur genutzt bei hohen Strompreisen
                             # oder wenn Netzbezug teurer ist
                             variable_costs=5.0  # €/MWh - verhindert unnötiges Ent-/Wiederaufladen
                         )
