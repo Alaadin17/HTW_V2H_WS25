@@ -1,5 +1,5 @@
 """
-oemof Energy System Model für PV + BEV System
+oemof Energy System Model für PV + BEV System mit V2G
 
 Verbesserungen gegenüber der Original-Version:
 - Konfigurationsparameter als Dataclass für bessere Übersicht
@@ -9,36 +9,42 @@ Verbesserungen gegenüber der Original-Version:
 - Type Hints für bessere Code-Qualität
 - Logging-Konfiguration als separate Methode
 - Validierung der Eingangsdaten
+- V2G (Vehicle-to-Grid) Funktionalität
 
 System-Topologie:
         Bus_electricity              Bus_mobility
             |                            |
 PV--------->|                            |<---->BEV_battery
             |                            |
-Grid------->|<--------Wallbox----------->|------>BEV_consumption (Sink)
-            |        (Converter)         |
-excess------|                            |
+Grid------->|----wallbox_charge--------->|
+            |<---wallbox_discharge-------|----->BEV_consumption (Sink)
+excess------|       (V2G)                |
             |                            |
 demand<-----|                            |
 
 Komponenten:
-- Bus_electricity:  Haushalts-Elektrizitätsbus (PV, Netz, Hausbedarf, Überschuss)
-- Bus_mobility:     Mobilitäts-/BEV-Bus (Batterie und Fahrbedarf)
-- PV:               Photovoltaik-Anlage (Source)
-- Grid:             Netzanschluss (Source für Bezug, Sink für Einspeisung via excess)
-- Wallbox:          Ladestation als Converter zwischen electricity und mobility Bus
-                    - Input: Bus_electricity (variable_costs=0.0 für maximales Laden)
-                    - Output: Bus_mobility (max=BEV_at_home, nominal=11 kW)
-- BEV_battery:      Batteriespeicher (77 kWh, SOC 20-95%, balanced=False)
-- BEV_consumption:  Fahrverbrauch als separater Sink (fix=consumption/0.25 [kW])
-- excess:           Überschuss-Senke für Netzeinspeisung
-- demand:           Haushaltslast
+- Bus_electricity:      Haushalts-Elektrizitätsbus (PV, Netz, Hausbedarf, Überschuss)
+- Bus_mobility:         Mobilitäts-/BEV-Bus (Batterie und Fahrbedarf)
+- PV:                   Photovoltaik-Anlage (Source)
+- Grid:                 Netzanschluss (Source für Bezug, Sink für Einspeisung via excess)
+- wallbox_charge:       Ladestation (Converter: electricity → mobility, η=95%)
+                        - variable_costs=0.0 für maximales Laden bei PV-Überschuss
+                        - max=BEV_at_home (nur laden wenn zu Hause)
+- wallbox_discharge:    V2G-Funktion (Converter: mobility → electricity, η=90%)
+                        - variable_costs=5.0 €/MWh (verhindert unnötiges Zyklieren)
+                        - max=BEV_at_home (nur entladen wenn zu Hause)
+                        - Optional aktivierbar via enable_v2g
+- BEV_battery:          Batteriespeicher (77 kWh, SOC 20-95%, balanced=False)
+- BEV_consumption:      Fahrverbrauch als separater Sink (fix=consumption/0.25 [kW])
+- excess:               Überschuss-Senke für Netzeinspeisung
+- demand:               Haushaltslast
 
-Wichtige Hinweise:
-1. Wallbox ist CONVERTER (nicht Source) - verbindet beide Busse
-2. BEV_consumption als SEPARATER SINK
-3. variable_costs=0.0 an Wallbox → maximiert Ladevorgänge
-4. Consumption in kW umgerechnet (kWh/0.25)
+Wichtige Hinweise für V2G:
+1. Zwei separate Converter für bessere Kontrolle (Laden/Entladen)
+2. Entlade-Kosten > 0 verhindert "Rundreise" (laden-entladen-laden)
+3. Effizienz-Verluste simulieren reale Wandlungsverluste
+4. BEV entlädt nur wenn: Netzbezug teurer + BEV zu Hause + SOC ausreichend
+5. variable_costs der Entladung bestimmt, ab wann V2G wirtschaftlich ist
 """
 
 ###########################################################################
@@ -84,6 +90,9 @@ class SystemConfig:
     # System-Parameter
     grid_supply_power_kW: float = 30.0
     wallbox_power_kW: float = 11.0
+    wallbox_efficiency_charge: float = 0.95  # Wirkungsgrad beim Laden
+    wallbox_efficiency_discharge: float = 0.90  # Wirkungsgrad beim Entladen (V2G)
+    enable_v2g: bool = True  # V2G aktivieren/deaktivieren
     
     # BEV-Parameter
     bev_capacity_kWh: float = 77.0
@@ -367,14 +376,16 @@ class EnergySystemModel:
             )
         )
         
+        #======================================
         # ===== MOBILITÄTSBUS KOMPONENTEN =====
-        logging.info("  - Erstelle Wallbox (Ladestation als Transformer)")
+        #======================================
+        logging.info("  - Erstelle Wallbox (Ladestation: electricity → mobility)")
         self.es.add(
             cmp.Converter(
-                label="wallbox",
+                label="wallbox_charge",
                 inputs={
                     b_el: flows.Flow(
-                        variable_costs=0.0  # Kostenlos laden → Speicher lädt so oft wie möglich
+                        variable_costs=0.0  # Kostenlos laden → bevorzugt PV-Überschuss
                     )
                 },
                 outputs={
@@ -383,9 +394,32 @@ class EnergySystemModel:
                         nominal_value=self.config.wallbox_power_kW
                     )
                 },
-                conversion_factors={b_bev: 1.0}  # 100% Effizienz
+                conversion_factors={b_bev: self.config.wallbox_efficiency_charge}
             )
         )
+        
+        # V2G: Rückspeisung ins Hausnetz
+        if self.config.enable_v2g:
+            logging.info("  - Erstelle V2G-Funktion (Entladung: mobility → electricity)")
+            self.es.add(
+                cmp.Converter(
+                    label="wallbox_discharge",
+                    inputs={
+                        b_bev: flows.Flow(
+                            # Positive Kosten → wird nur genutzt bei hohen Strompreisen
+                            # oder wenn Netzbezug teurer ist
+                            variable_costs=5.0  # €/MWh - verhindert unnötiges Ent-/Wiederaufladen
+                        )
+                    },
+                    outputs={
+                        b_el: flows.Flow(
+                            max=bev_at_home,  # Kann nur entladen, wenn BEV zu Hause
+                            nominal_value=self.config.wallbox_power_kW
+                        )
+                    },
+                    conversion_factors={b_el: self.config.wallbox_efficiency_discharge}
+                )
+            )
         
         logging.info("  - Erstelle BEV-Verbrauch (Fahrverbrauch als Sink)")
         self.es.add(
@@ -505,6 +539,9 @@ def main():
         # System-Parameter
         grid_supply_power_kW=30.0,
         wallbox_power_kW=22.0,
+        wallbox_efficiency_charge=0.95,
+        wallbox_efficiency_discharge=0.90,
+        enable_v2g=True,  # V2G aktivieren
         
         # BEV-Parameter
         bev_capacity_kWh=77.0,
