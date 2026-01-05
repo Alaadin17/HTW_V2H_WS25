@@ -93,6 +93,7 @@ class SystemConfig:
     wallbox_efficiency_charge: float = 0.95  # Wirkungsgrad beim Laden
     wallbox_efficiency_discharge: float = 0.90  # Wirkungsgrad beim Entladen (V2G)
     enable_v2g: bool = True  # V2G aktivieren/deaktivieren
+    v2g_variable_costs: float = 5.0  # €/MWh - verhindert unnötiges Ent-/Wiederaufladen
     
     # BEV-Parameter
     bev_capacity_kWh: float = 77.0
@@ -107,7 +108,7 @@ class SystemConfig:
     
     # Ergebnis-Speicherung
     should_dump_results: bool = True
-    dump_filename: str = "case00_pv_only"
+    dump_filename: str = "dump"
     
     # Logging
     log_filename: str = "oemof_case00.log"
@@ -408,7 +409,7 @@ class EnergySystemModel:
                         b_bev: flows.Flow(
                             # Positive Kosten -> wird nur genutzt bei hohen Strompreisen
                             # oder wenn Netzbezug teurer ist
-                            variable_costs=5.0  # €/MWh - verhindert unnötiges Ent-/Wiederaufladen
+                            variable_costs=self.config.v2g_variable_costs  # €/MWh - verhindert unnötiges Ent-/Wiederaufladen
                         )
                     },
                     outputs={
@@ -542,6 +543,7 @@ def main():
         wallbox_efficiency_charge=0.95,
         wallbox_efficiency_discharge=0.90,
         enable_v2g=True,  # V2G aktivieren
+        v2g_variable_costs=5.0,  # €/MWh - verhindert unnötiges Ent-/Wiederaufladen
         
         # BEV-Parameter
         bev_capacity_kWh=77.0,
@@ -556,7 +558,7 @@ def main():
         
         # Ergebnis-Speicherung
         should_dump_results=True,
-        dump_filename="case00_pv_only",
+        dump_filename="case11_pv_BEV",
         
         # Debugging
         debug=False,
