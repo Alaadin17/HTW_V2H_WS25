@@ -112,10 +112,10 @@ class SystemConfig:
     
     # Ergebnis-Speicherung
     should_dump_results: bool = True
-    dump_filename: str = "case00_pv_only"
+    dump_filename: str = "case12_pv+BEV+speicher"
     
     # Logging
-    log_filename: str = "oemof_case00.log"
+    log_filename: str = "oemof_case12.log"
     log_screen_level: int = logging.INFO
     log_file_level: int = logging.INFO  # DEBUG würde oemof verlangsamen
 
@@ -548,19 +548,18 @@ def main():
         wallbox_power_kW=22.0,
         
         # Stationärer Batteriespeicher-Parameter
-        battery_capacity_kWh = 10.2  # Kapazität des Hausbatteriespeichers von BYD B-Box Premium HVS 10.2 Battery Storage 10.24 kWh
-        battery_min_soc = 0.1  # Minimaler Ladezustand (10%)
-        battery_max_soc = 1.0  # Maximaler Ladezustand (100%)
-        battery_initial_soc = 0.5  # Anfangs-Ladezustand (50%)
-        battery_efficiency = 0.95  # Wirkungsgrad beim Laden/Entladen
-        battery_max_power_kW = 10.0  # Maximale Lade-/Entladeleistung (AC Coupling) von Fronius Symo GEN24 10.0 Plus Hybrid-Inverter
-    
+        battery_capacity_kWh=10.2,  # Kapazität des Hausbatteriespeichers von BYD B-Box Premium HVS 10.2 Battery Storage 10.24 kWh
+        battery_min_soc=0.1,  # Minimaler Ladezustand (10%)
+        battery_max_soc=1.0,  # Maximaler Ladezustand (100%)
+        battery_initial_soc=0.5,  # Anfangs-Ladezustand (50%)
+        battery_efficiency=0.95,  # Wirkungsgrad beim Laden/Entladen
+        battery_max_power_kW=10.0,  # Maximale Lade-/Entladeleistung (AC Coupling) von Fronius Symo GEN24 10.0 Plus Hybrid-Inverter
 
         # BEV-Parameter
         bev_capacity_kWh=77.0,
         bev_min_soc=0.2,
         bev_max_soc=0.95,
-        bev_initial_soc=0.95,
+        bev_initial_soc=0.5,
         
         # Kosten
         pv_variable_costs=0.0,
@@ -569,7 +568,7 @@ def main():
         
         # Ergebnis-Speicherung
         should_dump_results=True,
-        dump_filename="case00_pv_only",
+        dump_filename="case12_pv+BEV+speicher",
         
         # Debugging
         debug=False,
