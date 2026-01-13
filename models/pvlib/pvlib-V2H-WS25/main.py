@@ -22,9 +22,9 @@ import pvlib
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from config import HTW_LON, HTW_LAT, PATH_HTW_WEATHER, PATH_RESULTS, PATH_PLOTS
+from config import HTW_LON, HTW_LAT, PATH_RESULTS, PATH_PLOTS
 import modules          # Jinko-Modul (CEC-Parameter)
-import v2h_inverter     # Sunny Tripower (Sandia-Parameter)
+import v2h_inverter     # Sunny Tripower
 import htw_weather
 
 
@@ -37,9 +37,11 @@ def setup_model(name, system, location):
         location=location,
         aoi_model="physical",
         spectral_model="no_loss",
+        transposition_model="perez",
         losses_model="pvwatts",
         name=name,
     )
+
 
 
 if __name__ == "__main__":
@@ -87,7 +89,7 @@ if __name__ == "__main__":
     module_parameters = modules.modul1()       # Series mit CEC-Parametern
 
     inverter_name = "Sunny_Tripower_10"
-    inverter_parameters = v2h_inverter.inv1()  # Sandia-Parameter des STP 10
+    inverter_parameters = v2h_inverter.inv1()  # dict
 
     # Stringauslegung: 12 Module in Serie, 2 Strings parallel → ca. 10,56 kWp
     modules_per_string = 12
@@ -121,41 +123,42 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------
     # Wetterdaten einlesen und aufbereiten (15 min)
     # ------------------------------------------------------------------
-    df_htw = pd.read_csv(PATH_HTW_WEATHER, sep=";")
 
-    # Spaltennamen vereinheitlichen und Zeitstempel setzen
-    df_htw = htw_weather.convert_column_names(
-        df_htw,
-        time="timestamp",
-        ghi="g_hor_si",
-        wind_speed="v_wind",
-        temp_air="t_luft",
-    )
+    # 1) Wetter laden (15-min) mit Spalten: ghi, dhi, temp_air, wind_speed
+    df_htw = htw_weather.load_htw_weather_15min()
 
-    # Diffuse und DNI für HTW berechnen
-    df_htw = htw_weather.calculate_diffuse_irradiation(
-        df_htw, parameter_name="ghi", lat=HTW_LAT, lon=HTW_LON
-    )
+    # 2) DNI aus Messwerten (GHI, DHI) + Sonnenstand ableiten
+    df_htw = htw_weather.add_dni_from_ghi_dhi(df_htw)
 
-    # Auf 15-Minuten-Raster bringen
-    # (falls Daten bereits 15-minütig vorliegen, bleibt die Struktur weitgehend erhalten)
-    weather_htw_15min = (
-        df_htw[["ghi", "dni", "dhi"]]
-        .resample("15min")
-        .interpolate()
-    )
+    # 3) pvlib-Weather-DF (Spaltennamen wie pvlib erwartet)
+    weather_htw_15min = df_htw[["ghi", "dni", "dhi", "temp_air", "wind_speed"]]
+
 
     # ------------------------------------------------------------------
     # Simulation: 15-Minuten-AC-Leistungszeitreihe
     # ------------------------------------------------------------------
     mc.run_model(weather=weather_htw_15min)
 
-    # pvlib liefert W → in kW umrechnen
-    pv_ac_15min_kw = (mc.results.ac / 1000.0).rename("P_AC_kW")
+    # DC-Leistung aus ModelChain (W)
+    pdc = mc.results.dc["p_mp"]
+
+    # AC über PVWatts (W)
+    pac = pvlib.inverter.pvwatts(
+        pdc=pdc,
+        pdc0=inverter_parameters["pdc0"],
+        eta_inv_nom=inverter_parameters["eta_inv_nom"],
+        eta_inv_ref=inverter_parameters["eta_inv_ref"],
+    )
+
+    pv_ac_15min_kw = (pac / 1000.0).rename("P_AC_kW")
 
     # DataFrame bauen
     pv_ts_15min = pd.DataFrame(pv_ac_15min_kw)
     pv_ts_15min.index.name = "time"
+
+    # Check
+    print("AC max [kW]:", pv_ac_15min_kw.max())
+    print("DC pmp max [kW]:", (mc.results.dc["p_mp"] / 1000).max())
 
     # ------------------------------------------------------------------
     # 15-min-Zeitreihe speichern (CSV → PATH_RESULTS)
@@ -167,12 +170,12 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------
     # Monatserträge berechnen
     # ------------------------------------------------------------------
-    result_monthly = pd.DataFrame()
-    result_monthly[mc.name] = (
-        pv_ts_15min["P_AC_kW"].resample("ME").sum()
-    ).round(1)  # kWh
+    dt_hours = 0.25  # 15 min
 
-    result_monthly.index = [cal.month_name[i] for i in range(1, 13)]
+    result_monthly = pd.DataFrame()
+    result_monthly[mc.name] = (pv_ts_15min["P_AC_kW"] * dt_hours).resample("ME").sum().round(1)
+
+    result_monthly.index = result_monthly.index.strftime("%B")
 
     result_annual = pd.DataFrame({"annual_yield": result_monthly.sum()})
 
@@ -196,7 +199,7 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------
     ax = result_monthly.plot.bar(
         rot=90,
-        title="Monatserträge PV-Anlage (HTW-Wetter, 2015)",
+        title="Monatserträge PV-Anlage (HTW-Wetter, 2025)",
         ylabel="Energie in kWh",
         grid=True,
         legend=False,
@@ -206,3 +209,9 @@ if __name__ == "__main__":
     svg_path = PATH_PLOTS / "results_monthly.svg"
     plt.savefig(svg_path)
     print(f"Monatsplot gespeichert unter: {svg_path}")
+    print(weather_htw_15min[["ghi","dhi","dni"]].describe())
+    print(weather_htw_15min.index[:3], weather_htw_15min.index[-3:])
+
+    annual_kwh = (pv_ts_15min["P_AC_kW"] * dt_hours).sum()
+    print("Annual yield [kWh]:", round(annual_kwh, 1))
+    print("Annual yield [MWh]:", round(annual_kwh / 1000, 3))

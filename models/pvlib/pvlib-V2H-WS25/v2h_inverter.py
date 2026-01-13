@@ -2,67 +2,55 @@
 # -*- coding: utf-8 -*-
 
 """
-This script contains the pv-inverter model for the V2H system.
-(Currently based on an example efficiency curve.)
+Inverter model for the V2H system: SMA Sunny Tripower 10.0 (STP10.0-3AV-40)
+
+We use pvlib's PVWatts inverter model because the datasheet provides
+nominal AC power and efficiencies, but not a full Sandia/CEC efficiency map.
+
+Datasheet (STP10.0):
+- Nominal AC power: 10,000 W
+- Max efficiency: 98.3% (0.983)
+- European efficiency: 98.0% (0.980)
 """
 
-import numpy as np
-from pvlib import inverter as pv_inverter   # <- WICHTIG: Alias verwenden
-
-
-def inv1():
+def inv1(
+    pac0: float = 10000.0,
+    eta_euro: float = 0.980,
+    eta_max: float = 0.983,
+):
     """
-    Return inverter parameters (Sandia model).
+    Return inverter parameters compatible with pvlib.inverter.pvwatts().
+
+    Parameters
+    ----------
+    pac0 : float
+        Nominal AC power in W (datasheet: 10,000 W).
+    eta_euro : float
+        European efficiency (datasheet: 98.0%).
+        Used as pvwatts 'eta_inv_nom'.
+    eta_max : float
+        Maximum efficiency (datasheet: 98.3%).
+        Used as pvwatts 'eta_inv_ref'.
+
+    Returns
+    -------
+    dict
+        Inverter parameters for PVWatts model:
+        - pdc0: DC input limit (W)
+        - eta_inv_nom: nominal efficiency (unitless)
+        - eta_inv_ref: reference efficiency (unitless)
     """
-    # inverter efficiency at different power points (source: PV*SOL)
-    eta_min = [0, 0.953, 0.959, 0.963, 0.9612, 0.959]  # P/P_max = 0, 0.2, 0.3, 0.5, 0.75, 1; U = 210V
-    eta_nom = [0, 0.961, 0.967, 0.971, 0.969, 0.967]  # P/P_max = 0, 0.2, 0.3, 0.5, 0.75, 1; U = 530V
-    eta_max = [0, 0.952, 0.958, 0.962, 0.96, 0.958]   # P/P_max = 0, 0.2, 0.3, 0.5, 0.75, 1; U = 560V
+    # PVWatts expects pdc0 as DC input limit. Choose it so that
+    # at pdc = pdc0, pac clips close to pac0.
+    # Using eta_max as reference efficiency is a pragmatic datasheet-based choice.
+    pdc0 = pac0 / eta_max  # e.g. 10000/0.983 ≈ 10173 W
 
-    dc_voltage = [[230.], [350.], [480.]]
-    p_dc_nom = 3750
-
-    p_dc = [0,
-            0.2 * p_dc_nom,
-            0.3 * p_dc_nom,
-            0.5 * p_dc_nom,
-            0.75 * p_dc_nom,
-            1.0 * p_dc_nom]
-
-    p_ac_min = []
-    p_ac_nom = []
-    p_ac_max = []
-    val_count = len(eta_min)
-
-    for i in range(val_count):
-        p_ac_min.append(p_dc[i] * eta_min[i])
-        p_ac_nom.append(p_dc[i] * eta_nom[i])
-        p_ac_max.append(p_dc[i] * eta_max[i])
-
-    ac_power = np.array(p_ac_min + p_ac_nom + p_ac_max)
-
-    sma_sb_data = {
-        "ac_power": ac_power,
-        "dc_power": np.array(p_dc + p_dc + p_dc),
-        "dc_voltage": np.array(dc_voltage[0] * val_count +
-                               dc_voltage[1] * val_count +
-                               dc_voltage[2] * val_count),
-        "dc_voltage_level": np.array(["Vmin"] * val_count +
-                                     ["Vnom"] * val_count +
-                                     ["Vmax"] * val_count),
-        "p_ac_0": 2900.,
-        "p_nt": 1.0,
+    inverter_parameters = {
+        "pdc0": pdc0,
+        "eta_inv_nom": eta_euro,
+        "eta_inv_ref": eta_max,
     }
-
-    inverter_1 = pv_inverter.fit_sandia(
-        sma_sb_data["ac_power"],
-        sma_sb_data["dc_power"],
-        sma_sb_data["dc_voltage"],
-        sma_sb_data["dc_voltage_level"],
-        sma_sb_data["p_ac_0"],
-        sma_sb_data["p_nt"],
-    )
-    return inverter_1
+    return inverter_parameters
 
 
 if __name__ == "__main__":
