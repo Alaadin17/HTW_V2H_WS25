@@ -1,9 +1,3 @@
 .vscode/settings.json
-/models/emobpy/emobpy_V2H-WS25/notebooks/bev/
-/models/emobpy/emobpy_V2H-WS25/notebooks/db/
-/models/emobpy/emobpy_V2H-WS25/notebooks/log/
-/models/emobpy/emobpy_V2H-WS25/notebooks/emobpy.log
-/models/emobpy/emobpy/
-/results/emobpy_V2H-WS25/bev_timeseries_15min_commuter.csv
-/results/emobpy_V2H-WS25/bev_timeseries_15min_student.csv
-/models/emobpy/emobpy_V2H-WS25/notebooks/.ipynb_checkpoints/
+results/oemof-V2H-WS25/dumps/case00_es_pv_only
+scripts/download_strompreise_2024.py
