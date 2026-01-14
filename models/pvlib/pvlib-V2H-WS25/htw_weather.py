@@ -2,128 +2,66 @@
 # -*- coding: utf-8 -*-
 
 """
-This script contains functions to prepare the weather-data from csv files.
+Prepare HTW weather data for pvlib.
+
+Expected input (15-min, comma-separated):
+time, ghi, dhi, t_luft, v_wind
 """
 
 import pandas as pd
-from pvlib import solarposition, irradiance
+import pvlib
 
-from config import HTW_LON, HTW_LAT, PATH_HTW_WEATHER, PATH_FRED_WEATHER
+from config import PATH_HTW_WEATHER, HTW_LAT, HTW_LON
 
 
-def calculate_diffuse_irradiation(df, parameter_name, lat, lon):
+def load_htw_weather_15min():
     """
-    Calculate diffuse irradiation
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Global Horizontal Irradiance (GHI) with datetime index
-    parameter_name : str
-        Name of column with GHI
-    lat : float
-        Latitude
-    lon : float
-        Longitude
-
-    Returns
-    -------
-    df_irradiance_combined : pd.DataFrame
-        Calculated
-            dni: the modeled direct normal irradiance in W/m^2.
-            dhi: the modeled diffuse horizontal irradiance in W/m^2.
-            kt: ratio of global to extraterrestrial irradiance on a horizontal plane.
-        Combined with the original Dataframe coulmns.
+    Loads the HTW weather CSV (15-min) and returns a DataFrame with:
+    columns: ghi, dhi, temp_air, wind_speed
+    index: DatetimeIndex (naive timestamps)
     """
+    df = pd.read_csv(PATH_HTW_WEATHER, sep=",")
 
-    # calculate dhi and dni for htw weatherdata
-    df_solarpos = solarposition.spa_python(df.index, lat, lon)
+    # Parse time and set index
+    df["time"] = pd.to_datetime(df["time"])
+    df = df.set_index("time")
 
-    # Calculate dhi and dni from parameter
-    df_irradiance = irradiance.erbs(ghi=df.loc[:, parameter_name],
-                                    zenith=df_solarpos.zenith,
-                                    datetime_or_doy=df.index.dayofyear)
+    # Keep / rename columns to pvlib standard
+    df = df.rename(columns={
+        "t_luft": "temp_air",
+        "v_wind": "wind_speed",
+    })
 
-    # Setup DataFrame
-    df_irradiance = pd.DataFrame(df_irradiance)
+    # Ensure numeric
+    for c in ["ghi", "dhi", "temp_air", "wind_speed"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    # Merge the DataFrame with the original one
-    df_irradiance_combined = df.merge(df_irradiance, left_index=True, right_index=True)
+    # Basic cleanup
+    df["ghi"] = df["ghi"].clip(lower=0)
+    df["dhi"] = df["dhi"].clip(lower=0)
 
-    return df_irradiance_combined
+    return df[["ghi", "dhi", "temp_air", "wind_speed"]]
 
 
-def convert_column_names(df, time, ghi, wind_speed, temp_air):
+def add_dni_from_ghi_dhi(df_weather):
     """
-    Converts the columns of a DataFrame and returns a DataFrame
+    Adds 'dni' derived from measured ghi & dhi.
 
-    Parameters
-    ----------
-    df: pd.DataFrame
-        Pandas DataFrame
-    time: str
-        Column name that contains the time.
-    ghi: str
-        Column name that contains the global horizontal irradiation values.
-    wind_speed: str
-        Colum name that contains the wind speed values.
-    temp_air: str
-    Column name that contains the air temperature values.
-
-    Returns
-    -------
-    pd.DataFrame
-        Original DataFrame with the timestamp column as index and changed column names.
+    Uses solar zenith computed for HTW_LAT/HTW_LON.
     """
-    # set the correct column names
-    column_names = {time: "timestamp",
-                    ghi: "ghi",
-                    wind_speed: "wind_speed",
-                    temp_air: "temp_air",
-                    }
-    df = df.rename(columns=column_names)
+    times = df_weather.index
 
-    # Set the timestamp as Index as a Datetime datatype
-    df.set_index('timestamp', inplace=True)
-    df.index = pd.to_datetime(df.index)
+    # Solar position (zenith)
+    solpos = pvlib.solarposition.get_solarposition(times, HTW_LAT, HTW_LON)
 
-    return df
+    # DNI from GHI + DHI + zenith
+    dni = pvlib.irradiance.dni(
+        ghi=df_weather["ghi"],
+        dhi=df_weather["dhi"],
+        zenith=solpos["zenith"],
+    )
 
+    df_out = df_weather.copy()
+    df_out["dni"] = dni.fillna(0).clip(lower=0)
 
-if __name__ == "__main__":
-    # The dataframe for the weather data must fulfill the following conditions:
-    # - Index named "timestamp" as Datetime datatype
-    # - Contain the columns "ghi", "dhi", "dni"
-    # - Sampled in hours
-
-    # For the htw weather file you have to change the column names
-    # and calculate the diffuse irradiation (dhi and dni).
-    df_htw = pd.read_csv(PATH_HTW_WEATHER, sep=";")  # Read the file (mview!)
-
-    # For the fred file you only have to read the data because the column names are correct
-    # and the diffuse irradiation is already available.
-    df_fred = pd.read_csv(PATH_FRED_WEATHER, sep=",")  # Read the file
-
-    # Convert the column names for the htw weather and calculate the diffuse irradiation.
-    df_htw = convert_column_names(df_htw, time="timestamp", ghi="g_hor_si", wind_speed="v_wind", temp_air="t_Luft")
-    df_htw = calculate_diffuse_irradiation(df_htw, parameter_name="ghi", lat=HTW_LAT, lon=HTW_LON)
-
-    # Column names are already correct but the "timestamp" column has to be set as Index
-    df_fred = convert_column_names(df_fred, time="time", ghi="ghi", wind_speed="wind_speed", temp_air="temp_air")
-
-    # Assign the weather DataFrame hourly resampled
-    weather_htw = df_htw.resample("h").mean()
-    weather_fred = df_fred.resample("h").mean()
-    weather_fred = weather_fred[weather_fred.index.year > 2014]
-
-    # Print the results
-    print(weather_htw)
-    print("\n")
-    print(weather_fred)
-    print("\n")
-    print("Maximum global horizontal irradiation:")
-    print("htw:", df_htw.ghi.max())
-    print("fred:", df_fred.ghi.max())
-    print("\n")
-    print(f"HTW: Total anual irradiation: {round(weather_htw.ghi.sum() / 1000, 1)} kWh/m²")
-    print(f"Openfred: Total anual irradiation: {round(weather_fred.ghi.sum() / 1000, 1)} kWh/m²")
+    return df_out
