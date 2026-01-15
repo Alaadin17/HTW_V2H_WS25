@@ -474,7 +474,7 @@ def main():
         
         # Ergebnis-Speicherung
         should_dump_results=True,
-        dump_filename="case10_pv+battery",
+        dump_filename="case20_es_pv+speicher_dyn",
         
         # Debugging
         debug=False,

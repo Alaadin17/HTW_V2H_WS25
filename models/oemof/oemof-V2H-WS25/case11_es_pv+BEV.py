@@ -575,7 +575,7 @@ def main():
         
         # Ergebnis-Speicherung
         should_dump_results=True,
-        dump_filename="case11_pv_BEV_with_full_load_time_max_False_NonConvex_max_startups200",
+        dump_filename="case11_es_pv+BEV",
         
         # Debugging
         debug=False,

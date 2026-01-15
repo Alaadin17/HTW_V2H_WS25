@@ -612,13 +612,13 @@ def main():
 
         
         # Kosten
-        pv_variable_costs=0.0,
-        grid_variable_costs=30.0,  # €/MWh
-        grid_feedin_tariff=-7.9,  # €/MWh
+        pv_variable_costs=0.0, # cent/kWh
+        grid_variable_costs=30.0,  # cent/kWh
+        grid_feedin_tariff=-7.9,  # cent/kWh
         
         # Ergebnis-Speicherung
         should_dump_results=True,
-        dump_filename="case12_pv+BEV+speicher",
+        dump_filename="case22_es_pv+BEV+speicher_dyn",
         
         # Debugging
         debug=False,
