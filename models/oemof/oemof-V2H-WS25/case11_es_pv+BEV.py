@@ -65,6 +65,7 @@ from oemof.solph import (
     flows,
     helpers,
     processing,
+    NonConvex
 )
 from oemof.tools import logger
 from pyomo.opt import SolverStatus, TerminationCondition
@@ -86,6 +87,8 @@ class SystemConfig:
     solver: str = "cbc"
     solver_verbose: bool = False
     debug: bool = True  # DEBUG-MODUS für LP-Datei
+    solver_threads: int = 8 # Anzahl Threads für den Solver
+    solver_ratio_gap: float = 0.01  # 1% Lücken-Toleranz
     
     # System-Parameter
     grid_supply_power_kW: float = 30.0
@@ -94,7 +97,7 @@ class SystemConfig:
     wallbox_efficiency_discharge: float = 0.90  # Wirkungsgrad beim Entladen (V2G)
     enable_v2g: bool = True  # V2G aktivieren/deaktivieren
     v2g_variable_costs: float = 5.0  # €/MWh - verhindert unnötiges Ent-/Wiederaufladen
-    
+
     # BEV-Parameter
     bev_capacity_kWh: float = 77.0
     bev_min_soc: float = 0.2
@@ -399,23 +402,26 @@ class EnergySystemModel:
             )
         )
         
-        # V2G: Rückspeisung ins Hausnetz
+        # ===== V2G mit BINÄRER OPERATION =====
         if self.config.enable_v2g:
-            logging.info("  - Erstelle V2G-Funktion (Entladung: mobility -> electricity)")
+            logging.info(f"  - Erstelle V2G-Funktion (BINÄR + EXAKT {self.config.v2g_full_load_time_min}h erzwungen)")
+            logging.info(f"    • nominal_value: {self.config.wallbox_power_kW} kW")
+            logging.info(f"    • min=1.0, max=1.0 -> Nur 100% oder AUS")
+            
             self.es.add(
                 cmp.Converter(
                     label="wallbox_discharge",
                     inputs={
                         b_bev: flows.Flow(
-                            # Positive Kosten -> wird nur genutzt bei hohen Strompreisen
-                            # oder wenn Netzbezug teurer ist
-                            variable_costs=self.config.v2g_variable_costs  # €/MWh - verhindert unnötiges Ent-/Wiederaufladen
+                            variable_costs=self.config.v2g_variable_costs
                         )
                     },
                     outputs={
                         b_el: flows.Flow(
-                            max=bev_at_home,  # Kann nur entladen, wenn BEV zu Hause
-                            nominal_value=self.config.wallbox_power_kW
+                            # → Flow ist entweder 100% nominal_value oder 0
+                            min= 0.0,
+                            max=bev_at_home,  # Kann nur entladen wenn zu Hause
+                            nominal_value=self.config.wallbox_power_kW,
                         )
                     },
                     conversion_factors={b_el: self.config.wallbox_efficiency_discharge}
@@ -469,12 +475,23 @@ class EnergySystemModel:
         logging.info("Schritt 6: Löse Optimierungsproblem")
         logging.info(f"  Solver: {self.config.solver}")
         
+        # Solver-Optionen
+        solver_options = {}
+        if self.config.solver == "cbc":
+            solver_options = {
+                "threads": self.config.solver_threads,
+                "ratioGap": self.config.solver_ratio_gap,
+            }
+
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=UserWarning)
             
+            
             results = self.model.solve(
                 solver=self.config.solver,
-                solve_kwargs={"tee": self.config.solver_verbose}
+                solve_kwargs={"tee": self.config.solver_verbose},
+                cmdline_options=solver_options
+                
             )
             
             # Prüfe Solver-Status
@@ -535,16 +552,16 @@ def main():
     config = SystemConfig(
         # Zeitliche Parameter
         start_date="2022-01-01",
-        periods=35040,  # 1 Jahr mit 15-Minuten-Auflösung
+        periods=3*24*4,  # 1 Jahr mit 15-Minuten-Auflösung
         
         # System-Parameter
         grid_supply_power_kW=30.0,
-        wallbox_power_kW=22.0,
+        wallbox_power_kW=11.0,
         wallbox_efficiency_charge=0.95,
         wallbox_efficiency_discharge=0.90,
         enable_v2g=True,  # V2G aktivieren
         v2g_variable_costs=5.0,  # €/MWh - verhindert unnötiges Ent-/Wiederaufladen
-        
+
         # BEV-Parameter
         bev_capacity_kWh=77.0,
         bev_min_soc=0.2,
@@ -558,7 +575,7 @@ def main():
         
         # Ergebnis-Speicherung
         should_dump_results=True,
-        dump_filename="case11_pv_BEV",
+        dump_filename="case11_pv_BEV_with_full_load_time_max_False_NonConvex_max_startups200",
         
         # Debugging
         debug=False,
