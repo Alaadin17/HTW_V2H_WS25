@@ -63,6 +63,8 @@ def restore_and_process_results(case_name: str) -> dict:
     logging.info(f"Restore aus: {dump_path}")
     
     energysystem = EnergySystem()
+    # Die Dump-Datei liegt direkt im dumps-Ordner (nicht in einem Unterordner)
+    dump_file_path = os.path.join(dump_path, case_name)
     energysystem.restore(dpath=dump_path, filename=case_name)
     results = energysystem.results["main"]
     
@@ -99,11 +101,14 @@ def restore_and_process_results(case_name: str) -> dict:
         "Netzbezug [kW]",
         "Netzeinspeisung [kW]",
         "Wallbox Ladung [kW]",
+        "V2G Entladung ins Haus [kW]",
         "Heimspeicher Laden [kW]",
         "Heimspeicher Entladen [kW]",
         "Heimspeicher Ladezustand [kWh]",
         "BEV Laden [kW]",
         "BEV Entladen [kW]",
+        "BEV Fahrverbrauch [kW]",
+        "BEV V2G Entladung (vor Wandlung) [kW]",
         "BEV Ladezustand [kWh]"
     ]
     
@@ -144,13 +149,16 @@ def extract_electricity_flows(results: dict) -> pd.DataFrame:
             flows["Haushaltslast [kW]"] = v["sequences"]["flow"]
         elif node_from == "electricity" and node_to == "mobility":
             flows["Wallbox Ladung [kW]"] = v["sequences"]["flow"]
+        # V2G (wallbox_discharge): Rückspeisung vom mobility bus ins Hausnetz
+        elif node_from == "wallbox_discharge" and node_to == "electricity":
+            flows["V2G Entladung ins Haus [kW]"] = v["sequences"]["flow"]
         # Heimspeicher-Flüsse werden in extract_battery_flows() behandelt
     
     return pd.DataFrame(flows)
 
 
 def extract_battery_flows(results: dict, battery_label: str, prefix: str = "") -> pd.DataFrame:
-    """Extrahiert Batterie-Flüsse und SOC"""
+    """Extrahiert Batterie-Flüsse und SOC, mit BEV-spezifischen Details"""
     node_data = views.node(results, battery_label)
     sequences = node_data["sequences"]
     
@@ -171,6 +179,32 @@ def extract_battery_flows(results: dict, battery_label: str, prefix: str = "") -
             flows[f"{prefix} Laden [kW]"] = sequences[col]
         elif node_from == battery_label and 'flow' in col_name:
             flows[f"{prefix} Entladen [kW]"] = sequences[col]
+    
+    # BEV-spezifische Flows (Fahrverbrauch und V2G getrennt)
+    if battery_label == "bev_battery":
+        for k, v in results.items():
+            node_from = str(k[0])
+            node_to = str(k[1])
+            
+            # Fahrverbrauch: mobility -> bev_consumption
+            if node_from == "mobility" and node_to == "bev_consumption":
+                flows[f"{prefix} Fahrverbrauch [kW]"] = v["sequences"]["flow"]
+            
+            # V2G Input (vor Wandlung): mobility -> wallbox_discharge
+            elif node_from == "mobility" and node_to == "wallbox_discharge":
+                flows[f"{prefix} V2G Entladung (vor Wandlung) [kW]"] = v["sequences"]["flow"]
+        
+        # Plausibilitätsprüfung: Gesamt-Entladung sollte = Fahrverbrauch + V2G sein
+        if f"{prefix} Entladen [kW]" in flows and f"{prefix} Fahrverbrauch [kW]" in flows:
+            total_discharge = flows[f"{prefix} Entladen [kW]"]
+            driving = flows[f"{prefix} Fahrverbrauch [kW]"]
+            v2g = flows.get(f"{prefix} V2G Entladung (vor Wandlung) [kW]", pd.Series(0, index=total_discharge.index))
+            
+            # Berechne Differenz (sollte nahe 0 sein)
+            check = total_discharge - (driving + v2g)
+            max_error = check.abs().max()
+            if max_error > 1e-3:  # Warnung wenn Fehler > 1 Watt
+                print(f"⚠️ Warnung: BEV Entlade-Bilanz hat max. Abweichung von {max_error:.3f} kW")
     
     return pd.DataFrame(flows)
 
@@ -301,32 +335,27 @@ if __name__ == "__main__":
     """
     
     # ==================== KONFIGURATION ====================
-    case_0 = "case00_pv_only"
-    case_10 = "case10_pv+battery"
-    case_12 = "case12_pv+BEV+speicher"
+    case_0 = "case12_pv+BEV+speicher"
+    # case_1 =
+    # case_2 = 
+    # case_3 =
+    # case_4 = 
     
-    case_to_study = case_12  # <-- HIER CASE WÄHLEN
+    cases_to_study = [case_0]  # <-- Test I
     # ======================================================
+    for case_to_study in cases_to_study:
+        # 1. Restore und verarbeite
+        results = restore_and_process_results(case_to_study)
+        # 2. Speichere CSVs
+        save_all_results(results, case_to_study)
     
-    print("\n" + "="*80)
-    print("ENERGIESYSTEM ANALYSE")
-    print("="*80)
-    print(f"Case: {case_to_study}")
-    print("="*80)
+    # # 3. Erstelle Plot
+    # print(f"\n{'='*80}")
+    # print("ERSTELLE INTERAKTIVEN PLOT")
+    # print(f"{'='*80}")
+    # print("Hinweis: Klicke auf Legend-Einträge um Linien ein-/auszublenden!")
+    # plot_interactive(results, case_to_study)
     
-    # 1. Restore und verarbeite
-    results = restore_and_process_results(case_to_study)
-    
-    # 2. Speichere CSVs
-    save_all_results(results, case_to_study)
-    
-    # 3. Erstelle Plot
-    print(f"\n{'='*80}")
-    print("ERSTELLE INTERAKTIVEN PLOT")
-    print(f"{'='*80}")
-    print("Hinweis: Klicke auf Legend-Einträge um Linien ein-/auszublenden!")
-    plot_interactive(results, case_to_study)
-    
-    print(f"\n{'='*80}")
-    print("✓ ANALYSE ABGESCHLOSSEN")
-    print(f"{'='*80}\n")
+    # print(f"\n{'='*80}")
+    # print("✓ ANALYSE ABGESCHLOSSEN")
+    # print(f"{'='*80}\n")
