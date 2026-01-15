@@ -335,7 +335,7 @@ if __name__ == "__main__":
     """
     
     # ==================== KONFIGURATION ====================
-    case_0 = "case12_pv+BEV+speicher"
+    case_0 = "case10_pv+speicher"
     # case_1 =
     # case_2 = 
     # case_3 =
