@@ -27,10 +27,10 @@ Komponenten:
 - Bus_mobility:         Mobilitäts-/BEV-Bus (Batterie und Fahrbedarf)
 - PV:                   Photovoltaik-Anlage (Source)
 - Grid:                 Netzanschluss (Source für Bezug, Sink für Einspeisung via excess)
-- wallbox_charge:       Ladestation (Converter: electricity → mobility, η=95%)
+- wallbox_charge:       Ladestation (Converter: electricity -> mobility, eta=95%)
                         - variable_costs=0.0 für maximales Laden bei PV-Überschuss
                         - max=BEV_at_home (nur laden wenn zu Hause)
-- wallbox_discharge:    V2G-Funktion (Converter: mobility → electricity, η=90%)
+- wallbox_discharge:    V2G-Funktion (Converter: mobility -> electricity, eta=90%)
                         - variable_costs=5.0 €/MWh (verhindert unnötiges Zyklieren)
                         - max=BEV_at_home (nur entladen wenn zu Hause)
                         - Optional aktivierbar via enable_v2g
@@ -65,6 +65,7 @@ from oemof.solph import (
     flows,
     helpers,
     processing,
+    NonConvex
 )
 from oemof.tools import logger
 from pyomo.opt import SolverStatus, TerminationCondition
@@ -86,6 +87,8 @@ class SystemConfig:
     solver: str = "cbc"
     solver_verbose: bool = False
     debug: bool = True  # DEBUG-MODUS für LP-Datei
+    solver_threads: int = 8 # Anzahl Threads für den Solver
+    solver_ratio_gap: float = 0.01  # 1% Lücken-Toleranz
     
     # System-Parameter
     grid_supply_power_kW: float = 30.0
@@ -93,7 +96,8 @@ class SystemConfig:
     wallbox_efficiency_charge: float = 0.95  # Wirkungsgrad beim Laden
     wallbox_efficiency_discharge: float = 0.90  # Wirkungsgrad beim Entladen (V2G)
     enable_v2g: bool = True  # V2G aktivieren/deaktivieren
-    
+    v2g_variable_costs: float = 5.0  # €/MWh - verhindert unnötiges Ent-/Wiederaufladen
+
     # BEV-Parameter
     bev_capacity_kWh: float = 77.0
     bev_min_soc: float = 0.2
@@ -107,7 +111,7 @@ class SystemConfig:
     
     # Ergebnis-Speicherung
     should_dump_results: bool = True
-    dump_filename: str = "case00_pv_only"
+    dump_filename: str = "dump"
     
     # Logging
     log_filename: str = "oemof_case00.log"
@@ -190,7 +194,7 @@ def validate_and_clean_timeseries(df: pd.DataFrame) -> pd.DataFrame:
     """
     df_clean = df.copy()
     
-    # PV-Werte müssen >= 0 sein (negative Werte → 0)
+    # PV-Werte müssen >= 0 sein (negative Werte -> 0)
     df_clean["PV_kW"] = df_clean["PV_kW"].clip(lower=0)
     
     # Prüfe auf NaN-Werte
@@ -314,9 +318,9 @@ class EnergySystemModel:
         pv_timeseries = self.df_timeseries["PV_kW"].iloc[:self.config.periods]
         load_timeseries = self.df_timeseries["Load_kW"].iloc[:self.config.periods]
         bev_at_home = self.df_timeseries["BEV_at_home"].iloc[:self.config.periods]
-        # Consumption in kWh pro Zeitschritt → muss in kW umgewandelt werden
+        # Consumption in kWh pro Zeitschritt -> muss in kW umgewandelt werden
         bev_consumption_kWh = self.df_timeseries["consumption"].iloc[:self.config.periods]
-        bev_consumption = bev_consumption_kWh / 0.25  # kWh → kW für fixed_losses_absolute
+        bev_consumption = bev_consumption_kWh / 0.25  # kWh -> kW für fixed_losses_absolute
         # ===== BUSSE =====
         logging.info("  - Erstelle Busse")
         b_el = buses.Bus(label="electricity")
@@ -379,13 +383,13 @@ class EnergySystemModel:
         #======================================
         # ===== MOBILITÄTSBUS KOMPONENTEN =====
         #======================================
-        logging.info("  - Erstelle Wallbox (Ladestation: electricity → mobility)")
+        logging.info("  - Erstelle Wallbox (Ladestation: electricity -> mobility)")
         self.es.add(
             cmp.Converter(
                 label="wallbox_charge",
                 inputs={
                     b_el: flows.Flow(
-                        variable_costs=0.0  # Kostenlos laden → bevorzugt PV-Überschuss
+                        variable_costs=0.0  # Kostenlos laden -> bevorzugt PV-Ueberschuss
                     )
                 },
                 outputs={
@@ -398,23 +402,26 @@ class EnergySystemModel:
             )
         )
         
-        # V2G: Rückspeisung ins Hausnetz
+        # ===== V2G mit BINÄRER OPERATION =====
         if self.config.enable_v2g:
-            logging.info("  - Erstelle V2G-Funktion (Entladung: mobility → electricity)")
+            logging.info(f"  - Erstelle V2G-Funktion (BINÄR + EXAKT {self.config.v2g_full_load_time_min}h erzwungen)")
+            logging.info(f"    • nominal_value: {self.config.wallbox_power_kW} kW")
+            logging.info(f"    • min=1.0, max=1.0 -> Nur 100% oder AUS")
+            
             self.es.add(
                 cmp.Converter(
                     label="wallbox_discharge",
                     inputs={
                         b_bev: flows.Flow(
-                            # Positive Kosten → wird nur genutzt bei hohen Strompreisen
-                            # oder wenn Netzbezug teurer ist
-                            variable_costs=5.0  # €/MWh - verhindert unnötiges Ent-/Wiederaufladen
+                            variable_costs=self.config.v2g_variable_costs
                         )
                     },
                     outputs={
                         b_el: flows.Flow(
-                            max=bev_at_home,  # Kann nur entladen, wenn BEV zu Hause
-                            nominal_value=self.config.wallbox_power_kW
+                            # → Flow ist entweder 100% nominal_value oder 0
+                            min= 0.0,
+                            max=bev_at_home,  # Kann nur entladen wenn zu Hause
+                            nominal_value=self.config.wallbox_power_kW,
                         )
                     },
                     conversion_factors={b_el: self.config.wallbox_efficiency_discharge}
@@ -468,12 +475,23 @@ class EnergySystemModel:
         logging.info("Schritt 6: Löse Optimierungsproblem")
         logging.info(f"  Solver: {self.config.solver}")
         
+        # Solver-Optionen
+        solver_options = {}
+        if self.config.solver == "cbc":
+            solver_options = {
+                "threads": self.config.solver_threads,
+                "ratioGap": self.config.solver_ratio_gap,
+            }
+
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=UserWarning)
             
+            
             results = self.model.solve(
                 solver=self.config.solver,
-                solve_kwargs={"tee": self.config.solver_verbose}
+                solve_kwargs={"tee": self.config.solver_verbose},
+                cmdline_options=solver_options
+                
             )
             
             # Prüfe Solver-Status
@@ -534,15 +552,16 @@ def main():
     config = SystemConfig(
         # Zeitliche Parameter
         start_date="2022-01-01",
-        periods=35040,  # 1 Jahr mit 15-Minuten-Auflösung
+        periods=3*24*4,  # 1 Jahr mit 15-Minuten-Auflösung
         
         # System-Parameter
         grid_supply_power_kW=30.0,
-        wallbox_power_kW=22.0,
+        wallbox_power_kW=11.0,
         wallbox_efficiency_charge=0.95,
         wallbox_efficiency_discharge=0.90,
         enable_v2g=True,  # V2G aktivieren
-        
+        v2g_variable_costs=5.0,  # €/MWh - verhindert unnötiges Ent-/Wiederaufladen
+
         # BEV-Parameter
         bev_capacity_kWh=77.0,
         bev_min_soc=0.2,
@@ -556,7 +575,7 @@ def main():
         
         # Ergebnis-Speicherung
         should_dump_results=True,
-        dump_filename="case00_pv_only",
+        dump_filename="case11_es_pv+BEV",
         
         # Debugging
         debug=False,

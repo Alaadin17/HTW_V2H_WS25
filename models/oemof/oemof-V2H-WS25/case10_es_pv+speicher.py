@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 import warnings
 
+
 import pandas as pd
 from oemof.solph import (
     EnergySystem,
@@ -66,7 +67,7 @@ class SystemConfig:
     """Konfigurationsparameter für das Energiesystem"""
     
     # Zeitliche Parameter
-    start_date: str = "2022-01-01"
+    start_date: str = "2025-01-01"
     periods: int = 96  # 15-Minuten-Schritte (96 = 1 Tag für Debug)
     freq: str = "15min"
     
@@ -461,20 +462,20 @@ def main():
     # Erstelle Konfiguration (kann angepasst werden)
     config = SystemConfig(
         # Zeitliche Parameter
-        start_date="2022-01-01",
+        start_date="2025-01-01",
         periods=35040,  # 1 Jahr mit 15-Minuten-Auflösung
         
         # System-Parameter
         grid_supply_power_kW=30.0,
         
         # Kosten
-        pv_variable_costs=0.0,
-        grid_variable_costs=30.0,  # €/MWh
-        grid_feedin_tariff=-7.9,  # €/MWh
+        pv_variable_costs=0.0, # cent/kWh
+        grid_variable_costs=30.0,  # cent/kWh
+        grid_feedin_tariff=-7.9,  # cent/kWh
         
         # Ergebnis-Speicherung
         should_dump_results=True,
-        dump_filename="case10_pv+battery",
+        dump_filename="case10_es_pv+speicher",
         
         # Debugging
         debug=False,

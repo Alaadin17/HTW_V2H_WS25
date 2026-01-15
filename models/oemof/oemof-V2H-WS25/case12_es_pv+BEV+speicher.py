@@ -1,5 +1,5 @@
 """
-oemof Energy System Model für PV + BEV System
+oemof Energy System Model für PV + BEV System + Batteriespeicher
 
 Verbesserungen gegenüber der Original-Version:
 - Konfigurationsparameter als Dataclass für bessere Übersicht
@@ -64,6 +64,7 @@ from oemof.solph import (
     flows,
     helpers,
     processing,
+    NonConvex
 )
 from oemof.tools import logger
 from pyomo.opt import SolverStatus, TerminationCondition
@@ -85,10 +86,16 @@ class SystemConfig:
     solver: str = "cbc"
     solver_verbose: bool = False
     debug: bool = True  # DEBUG-MODUS für LP-Datei
+    solver_threads: int = 6 # Anzahl Threads für den Solver
+    solver_ratio_gap: float = 0.05  # 1% Lücken-Toleranz
     
     # System-Parameter
     grid_supply_power_kW: float = 30.0
     wallbox_power_kW: float = 11.0
+    wallbox_efficiency_charge: float = 0.95  # Wirkungsgrad beim Laden
+    wallbox_efficiency_discharge: float = 0.90  # Wirkungsgrad beim Entladen (V2H)
+    enable_v2g: bool = True  # V2G aktivieren/deaktivieren
+    v2g_variable_costs: float = 5.0  # €/MWh - verhindert unnötiges Ent-/Wiederaufladen
     
     # BEV-Parameter
     bev_capacity_kWh: float = 77.0
@@ -103,7 +110,7 @@ class SystemConfig:
     battery_initial_soc: float = 0.5  # Anfangs-Ladezustand (50%)
     battery_efficiency: float = 0.95  # Wirkungsgrad beim Laden/Entladen
     battery_max_power_kW: float = 10.0  # Maximale Lade-/Entladeleistung (AC Coupling) von Fronius Symo GEN24 10.0 Plus Hybrid-Inverter
-   
+    
     
     # Kosten (€/MWh oder €/kWh)
     pv_variable_costs: float = 0.0
@@ -427,6 +434,31 @@ class EnergySystemModel:
                 conversion_factors={b_bev: 1.0}  # 100% Effizienz
             )
         )
+
+         # ===== V2G mit BINÄRER OPERATION =====
+        if self.config.enable_v2g:
+            logging.info(f"  - Erstelle V2G-Funktion (BINÄR + EXAKT {self.config.v2g_full_load_time_min}h erzwungen)")
+            logging.info(f"    • nominal_value: {self.config.wallbox_power_kW} kW")
+            logging.info(f"    • min=0, max=1.0 -> Nur 100% oder AUS")
+            
+            self.es.add(
+                cmp.Converter(
+                    label="wallbox_discharge",
+                    inputs={
+                        b_bev: flows.Flow(
+                            variable_costs=self.config.v2g_variable_costs
+                        )
+                    },
+                    outputs={
+                        b_el: flows.Flow(
+                            min=0.0,
+                            max=bev_at_home,  # Kann nur entladen wenn zu Hause
+                            nominal_value=self.config.wallbox_power_kW,
+                        )
+                    },
+                    conversion_factors={b_el: self.config.wallbox_efficiency_discharge}
+                )
+            )
         
         logging.info("  - Erstelle BEV-Verbrauch (Fahrverbrauch als Sink)")
         self.es.add(
@@ -475,12 +507,22 @@ class EnergySystemModel:
         logging.info("Schritt 6: Löse Optimierungsproblem")
         logging.info(f"  Solver: {self.config.solver}")
         
+                # Solver-Optionen
+        solver_options = {}
+        if self.config.solver == "cbc":
+            solver_options = {
+                "threads": self.config.solver_threads,
+                "ratioGap": self.config.solver_ratio_gap,
+            }
+
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=UserWarning)
             
             results = self.model.solve(
                 solver=self.config.solver,
-                solve_kwargs={"tee": self.config.solver_verbose}
+                solve_kwargs={"tee": self.config.solver_verbose},
+                cmdline_options=solver_options
+                
             )
             
             # Prüfe Solver-Status
@@ -541,12 +583,24 @@ def main():
     config = SystemConfig(
         # Zeitliche Parameter
         start_date="2022-01-01",
-        periods=35040,  # 1 Jahr mit 15-Minuten-Auflösung
+        periods=24*31*4,  # 1 Jahr mit 15-Minuten-Auflösung
         
         # System-Parameter
         grid_supply_power_kW=30.0,
-        wallbox_power_kW=22.0,
+        wallbox_power_kW=11.0,
+        wallbox_efficiency_charge=0.95,
+        wallbox_efficiency_discharge=0.90,
+        enable_v2g=True,  # V2G aktivieren
+        v2g_variable_costs=5.0,  # €/MWh - verhindert unnötiges Ent-/Wiederaufladen
         
+        # BEV-Parameter
+        bev_capacity_kWh=77.0,
+        bev_min_soc=0.2,
+        bev_max_soc=0.95,
+        bev_initial_soc=0.5,
+
+
+
         # Stationärer Batteriespeicher-Parameter
         battery_capacity_kWh=10.2,  # Kapazität des Hausbatteriespeichers von BYD B-Box Premium HVS 10.2 Battery Storage 10.24 kWh
         battery_min_soc=0.1,  # Minimaler Ladezustand (10%)
@@ -555,20 +609,16 @@ def main():
         battery_efficiency=0.95,  # Wirkungsgrad beim Laden/Entladen
         battery_max_power_kW=10.0,  # Maximale Lade-/Entladeleistung (AC Coupling) von Fronius Symo GEN24 10.0 Plus Hybrid-Inverter
 
-        # BEV-Parameter
-        bev_capacity_kWh=77.0,
-        bev_min_soc=0.2,
-        bev_max_soc=0.95,
-        bev_initial_soc=0.5,
+
         
         # Kosten
-        pv_variable_costs=0.0,
-        grid_variable_costs=30.0,  # €/MWh
-        grid_feedin_tariff=-7.9,  # €/MWh
+        pv_variable_costs=0.0,  # cent/kWh
+        grid_variable_costs=30.0,  # cent/kWh
+        grid_feedin_tariff=-7.9,  # cent/kWh
         
         # Ergebnis-Speicherung
         should_dump_results=True,
-        dump_filename="case12_pv+BEV+speicher",
+        dump_filename="case12_es_pv+BEV+speicher",
         
         # Debugging
         debug=False,
