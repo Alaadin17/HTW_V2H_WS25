@@ -3,8 +3,8 @@ This project demonstrates how to create a bev time series with Emobpy and integr
 
 ## Citation
 
-This project makes use of [Oemof-solph](https://github.com/oemof/oemof-solph)
-If you use this project in scientific work, please cite this repo and Oemof-solph as well.
+This project makes use of [Oemof-solph](https://github.com/oemof/oemof-solph) and, PVlib, HTW-Loadprofiles and Emopy
+If you use this project in scientific work, please cite this repo and them above well.
 
 
 ## Features
